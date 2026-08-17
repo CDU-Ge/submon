@@ -58,11 +58,9 @@ func TestQuotaWindowMarkerAndBadge(t *testing.T) {
 	w.ResetAt = &reset
 
 	out := colorizeWindow("5h", w, time.Now(), cfg)
-	if !strings.Contains(out, "left") {
-		t.Errorf("expected 'left' marker, got %s", out)
-	}
-	if !strings.Contains(out, "3%") {
-		t.Errorf("expected remaining pct, got %s", out)
+	// Order: "<prefix> <pct>% left·<countdown>" — pct before the left marker.
+	if i, j := strings.Index(out, "3%"), strings.Index(out, "left"); i == -1 || j == -1 || i > j {
+		t.Errorf("expected 'pct%% left' order, got %s", out)
 	}
 	if !strings.Contains(out, ansiRed) { // 3% < crit threshold 5%
 		t.Errorf("expected red at 3%% remaining, got %s", out)
@@ -71,5 +69,22 @@ func TestQuotaWindowMarkerAndBadge(t *testing.T) {
 	badge := providerBadge(model.ProviderMinimax)
 	if !strings.Contains(badge, "MINIMAX") {
 		t.Errorf("badge should be uppercase provider, got %s", badge)
+	}
+}
+
+func TestModelProviderDetection(t *testing.T) {
+	cases := map[string]model.Provider{
+		"glm-5.3":          model.ProviderZhipu,
+		"GLM-4.7":          model.ProviderZhipu,
+		"minimax-m2":       model.ProviderMinimax,
+		"MiniMax-M2":       model.ProviderMinimax,
+		"claude-fable-5":   "",
+	}
+	for name, want := range cases {
+		in := &statuslineInput{}
+		in.Model.ID = name
+		if got := in.modelProvider(); got != want {
+			t.Errorf("modelProvider(%q) = %q, want %q", name, got, want)
+		}
 	}
 }

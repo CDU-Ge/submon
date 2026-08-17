@@ -23,7 +23,7 @@ var notifyCmd = &cobra.Command{
 		if !notifyTest {
 			return cmd.Usage()
 		}
-		cfg, err := config.Load()
+		cfg, err := loadDecryptedConfig()
 		if err != nil {
 			return err
 		}

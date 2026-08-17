@@ -37,12 +37,14 @@ quotas. Reads the **cache only** — never the network — so it always returns
 instantly and survives API outages by showing stale data.
 
 ```
-➜ subscription-monitor git:(main)✗ GLM-5.3 [12.3k/200k 6%] │ ⚡ZHIPU 5h left 97%·4h22m │ W left 80%·5d13h (↻2m)
+➜ subscription-monitor git:(main)✗ GLM-5.3 [12.3k/200k 6%] 5h 97% left·4h22m W 80% left·5d13h (↻2m)
 ```
 
-- The quota segment is prefixed with the provider (`ZHIPU` / `MINIMAX`) so
-  subscriptions are distinguishable at a glance.
-- Percentages are marked `left` (remaining); the reset countdown follows (`·`).
+- Quota windows read `5h 97% left·4h22m`: percentage, then the `left` marker,
+  then the reset countdown.
+- Smart provider badge: when the session's model already belongs to the
+  displayed subscription (GLM → zhipu, MiniMax → minimax) the badge is
+  omitted as redundant; otherwise `⚡ZHIPU` / `⚡MINIMAX` is shown.
 - Freshness trailer: `(↻2m)` counts down to the next cache refresh while data
   is fresh; `(age 36m)` (yellow) flags data older than the TTL.
 - Provider selection order: `--provider` flag → `ANTHROPIC_BASE_URL` domain
@@ -100,15 +102,55 @@ Send a test Gotify push to verify connectivity.
 
 Dump / delete the cache file (`~/.cache/submon/cache.json`).
 
+### `submon token` — encrypted credential storage
+
+Tokens are encrypted at rest with **AES-256-GCM**; config.toml only ever
+holds `enc:v1:...` ciphertext. The master key is self-managed (no OS keyring
+dependency): generated on first use and stored at
+`~/.config/submon/secret.key` (0600). Keep that file out of backups/sync if
+you sync config.toml.
+
+```sh
+submon token set zhipu.token            # interactive no-echo prompt
+submon token set minimax.token -        # read from stdin
+submon token ls                         # storage form overview (masked)
+submon token get zhipu.token            # decrypt for scripting
+submon token unset zhipu.token
+```
+
+Slots: `zhipu.token`, `minimax.token`, `gotify.app_token`.
+
+`submon generate config` migrates plaintext tokens (and the legacy
+`~/.minimax-config.json`) to encrypted form in one pass.
+
+### `submon enc`
+
+Encrypt/decrypt arbitrary values with the same master key, for use in other
+tools' configs:
+
+```sh
+submon enc "secret"          # → enc:v1:...
+echo "enc:v1:..." | submon enc -d
+```
+
 ## Configuration
 
 `~/.config/submon/config.toml` — see [`submon.example.toml`](submon.example.toml).
-Credentials resolve in this order:
+Credentials resolve in this order (encrypted config value wins):
 
 | provider | config | environment |
 |---|---|---|
-| zhipu | `[zhipu] token/base_url` | `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL` |
-| minimax | `[minimax] token` | `MINIMAX_TOKEN` |
+| zhipu | `[zhipu] token` (encrypted) / `base_url` | `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL` |
+| minimax | `[minimax] token` (encrypted) | `MINIMAX_TOKEN` |
+
+## Build
+
+```sh
+make build      # → ./submon (version info injected)
+make install    # → ~/.local/bin/submon
+make test       # unit tests
+make release    # cross-compile linux/amd64, darwin/amd64, darwin/arm64 into dist/
+```
 
 ## Notes on API semantics
 

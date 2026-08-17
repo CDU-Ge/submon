@@ -25,7 +25,7 @@ var watchCmd = &cobra.Command{
 		"a Gotify notification when the lowest remaining percentage crosses a\n" +
 		"threshold (warn/crit) or recovers. Designed to run once per timer tick.",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.Load()
+		cfg, err := loadDecryptedConfig()
 		if err != nil {
 			return err
 		}

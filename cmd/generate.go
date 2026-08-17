@@ -10,6 +10,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/ge/subscription-monitor/internal/config"
 	"github.com/ge/subscription-monitor/internal/provider"
+	"github.com/ge/subscription-monitor/internal/secret"
 	"github.com/spf13/cobra"
 )
 
@@ -42,12 +43,26 @@ var generateConfigCmd = &cobra.Command{
 		path := filepath.Join(dir, "config.toml")
 
 		migrated := ""
+		migrate := func(slot, value string) string {
+			if value == "" || secret.IsEncrypted(value) {
+				return value
+			}
+			enc, err := secret.Encrypt(value)
+			if err != nil {
+				return value // keep plaintext rather than failing the merge
+			}
+			migrated = slot
+			return enc
+		}
 		if cfg.MiniMax.Token == "" {
 			if tok := provider.ReadLegacyMinimaxToken(); tok != "" {
-				cfg.MiniMax.Token = tok
-				migrated = "~/.minimax-config.json"
+				cfg.MiniMax.Token = migrate("minimax.token (from ~/.minimax-config.json)", tok)
 			}
 		}
+		// Encrypt any plaintext tokens already in config.toml.
+		cfg.Zhipu.Token = migrate("zhipu.token", cfg.Zhipu.Token)
+		cfg.MiniMax.Token = migrate("minimax.token", cfg.MiniMax.Token)
+		cfg.Notify.Gotify.AppToken = migrate("gotify.app_token", cfg.Notify.Gotify.AppToken)
 
 		var buf bytes.Buffer
 		enc := toml.NewEncoder(&buf)

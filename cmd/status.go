@@ -31,7 +31,7 @@ var statusCmd = &cobra.Command{
 		string(model.ProviderMinimax),
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.Load()
+		cfg, err := loadDecryptedConfig()
 		if err != nil {
 			return err
 		}

@@ -3,11 +3,13 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/BurntSushi/toml"
+	"github.com/ge/subscription-monitor/internal/secret"
 )
 
 type Config struct {
@@ -112,9 +114,74 @@ func (c *Config) CachePath() (string, error) {
 	return filepath.Join(home, ".cache", "submon", "cache.json"), nil
 }
 
+// Path returns the config file location.
+func Path() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "config.toml"), nil
+}
+
+// Save writes the config back to disk atomically (0600: it holds encrypted
+// secrets, but keep it locked down regardless).
+func Save(c *Config) error {
+	path, err := Path()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(c); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".submon-config-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(buf.Bytes()); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(name, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(name, path)
+}
+
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
 	return fallback
+}
+
+// DecryptSecrets decrypts encrypted token fields in place. Plaintext values
+// pass through. Returns the first decryption error encountered (fields stay
+// as-is when decryption fails).
+func (c *Config) DecryptSecrets() error {
+	fields := []*string{&c.Zhipu.Token, &c.MiniMax.Token, &c.Notify.Gotify.AppToken}
+	var firstErr error
+	for _, f := range fields {
+		v := *f
+		if !secret.IsEncrypted(v) {
+			continue
+		}
+		pt, err := secret.Decrypt(v)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		*f = pt
+	}
+	return firstErr
 }

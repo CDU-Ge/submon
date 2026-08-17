@@ -36,10 +36,24 @@ type statuslineInput struct {
 	Workspace     struct {
 		CurrentDir string `json:"current_dir"`
 	} `json:"workspace"`
-	Model         struct {
+	Model struct {
+		ID      string `json:"id"`
 		Display string `json:"display_name"`
 	} `json:"model"`
 	ContextWindow contextWindowInfo `json:"context_window"`
+}
+
+// modelProvider guesses which subscription the session's model belongs to:
+// glm/zhipu names → zhipu, minimax names → minimax, else unknown.
+func (in *statuslineInput) modelProvider() model.Provider {
+	name := strings.ToLower(in.Model.ID + " " + in.Model.Display)
+	switch {
+	case strings.Contains(name, "glm"), strings.Contains(name, "zhipu"):
+		return model.ProviderZhipu
+	case strings.Contains(name, "minimax"):
+		return model.ProviderMinimax
+	}
+	return ""
 }
 
 var statuslineProvider string
@@ -111,7 +125,7 @@ func renderStatusline(in *statuslineInput, cfg *config.Config, now time.Time) st
 	}
 
 	// quotas + freshness
-	if q := quotaSegment(cfg, now); q != "" {
+	if q := quotaSegment(cfg, in.modelProvider(), now); q != "" {
 		segs = append(segs, q)
 	}
 
@@ -165,8 +179,10 @@ func contextSegment(cw contextWindowInfo) string {
 }
 
 // quotaSegment reads the cache and renders
-// "⚡ZHIPU 5h left 97%·4h22m │ W left 80%·5d13h (age 2m)".
-func quotaSegment(cfg *config.Config, now time.Time) string {
+// "⚡ZHIPU 5h 97% left·4h22m W 80% left·5d13h (age 2m)". The provider badge
+// is dropped when the session's model already belongs to that provider
+// (modelProvider matches) — the info would be redundant.
+func quotaSegment(cfg *config.Config, modelProv model.Provider, now time.Time) string {
 	name, err := resolveStatuslineProvider(cfg)
 	if err != nil {
 		return "" // quotas are an optional segment; never break the line
@@ -185,7 +201,7 @@ func quotaSegment(cfg *config.Config, now time.Time) string {
 		if entry != nil && entry.LastErr != "" {
 			hint = entry.LastErr
 		}
-		return ansiDim + "⚡" + strings.ToUpper(string(name)) + " " + hint + ansiReset
+		return ansiDim + "⚡" + badgeText(name) + " " + hint + ansiReset
 	}
 	s := entry.Snapshot
 
@@ -199,7 +215,11 @@ func quotaSegment(cfg *config.Config, now time.Time) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	out := ansiDim + "⚡" + ansiReset + providerBadge(s.Provider) + " " + strings.Join(parts, ansiDim+" │ "+ansiReset)
+	out := ""
+	if modelProv != name {
+		out = ansiDim + "⚡" + ansiReset + providerBadge(s.Provider) + " "
+	}
+	out += strings.Join(parts, " ")
 
 	// Freshness: age once stale, or countdown to next refresh while fresh.
 	age := now.Sub(s.FetchedAt)
@@ -213,6 +233,9 @@ func quotaSegment(cfg *config.Config, now time.Time) string {
 	}
 	return out
 }
+
+// badgeText is the plain (uncolored) provider label.
+func badgeText(p model.Provider) string { return strings.ToUpper(string(p)) }
 
 // providerBadge renders the provider tag, uppercase for distinction.
 func providerBadge(p model.Provider) string {
@@ -249,7 +272,8 @@ func resolveStatuslineProvider(cfg *config.Config) (model.Provider, error) {
 	return "", fmt.Errorf("cannot resolve provider")
 }
 
-// colorizeWindow renders "5h left 97%·4h22m" (left/used marker + pct + reset countdown).
+// colorizeWindow renders "5h 97% left·4h22m" (pct, then left/used marker,
+// then reset countdown).
 func colorizeWindow(prefix string, w *model.Window, now time.Time, cfg *config.Config) string {
 	if w.RemainingPct == nil && w.UsedPct == nil {
 		return prefix + " n/a"
@@ -265,7 +289,7 @@ func colorizeWindow(prefix string, w *model.Window, now time.Time, cfg *config.C
 			color = ansiYellow
 		}
 	}
-	out := prefix + " " + ansiDim + "left" + ansiReset + " " + color + pctStr + ansiReset
+	out := prefix + " " + color + pctStr + ansiReset + " " + ansiDim + "left" + ansiReset
 	if w.ResetAt != nil {
 		out += ansiDim + "·" + humanDuration(time.Until(*w.ResetAt)) + ansiReset
 	}

@@ -20,7 +20,9 @@ func envOr(key, fallback string) string {
 //
 //	zhipu:   cfg.Zhipu.Token       or ANTHROPIC_AUTH_TOKEN
 //	         cfg.Zhipu.BaseURL     or ANTHROPIC_BASE_URL
-//	minimax: cfg.MiniMax.Token    or ~/.minimax-config.json
+//	minimax: cfg.MiniMax.Token    or MINIMAX_TOKEN
+//
+// Callers pass an already-decrypted config (Config.DecryptSecrets).
 func Build(name model.Provider, cfg *config.Config) (Source, error) {
 	switch name {
 	case model.ProviderZhipu:
