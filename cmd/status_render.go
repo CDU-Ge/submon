@@ -24,11 +24,11 @@ const statusBarWidth = 12
 func renderStatus(w io.Writer, s *model.Snapshot, now time.Time, cfg *config.Config) {
 	title := providerBadge(s.Provider)
 	if s.PlanLevel != "" {
-		title += ansiDim + " · " + ansiReset + s.PlanLevel
+		title += ansiWhite + " · " + ansiReset + s.PlanLevel
 	}
 	fmt.Fprintf(w, "%s  %s\n", title,
-		ansiDim+"fetched "+humanDuration(now.Sub(s.FetchedAt))+" ago"+ansiReset)
-	fmt.Fprintln(w, ansiDim+strings.Repeat("─", 52)+ansiReset)
+		ansiWhite+"fetched "+humanDuration(now.Sub(s.FetchedAt))+" ago"+ansiReset)
+	fmt.Fprintln(w, ansiWhite+strings.Repeat("─", 52)+ansiReset)
 
 	for _, row := range []struct {
 		label string
@@ -65,7 +65,7 @@ func renderStatus(w io.Writer, s *model.Snapshot, now time.Time, cfg *config.Con
 // renderStatusWindow draws one quota row: dim label, threshold-colored bar
 // and percentage, reset countdown, and counts when the API reports them.
 func renderStatusWindow(w io.Writer, label string, win *model.Window, now time.Time, cfg *config.Config) {
-	pctStr, bar, color := "  n/a", strings.Repeat("░", statusBarWidth), ansiDim
+	pctStr, bar, color := "  n/a", strings.Repeat("░", statusBarWidth), ansiWhite
 	if win.RemainingPct != nil {
 		pct := *win.RemainingPct
 		pctStr = fmt.Sprintf("%3.0f%%", pct)
@@ -73,24 +73,24 @@ func renderStatusWindow(w io.Writer, label string, win *model.Window, now time.T
 		bar = color + miniBar(pct, statusBarWidth) + ansiReset
 	}
 	line := fmt.Sprintf("  %s%s%s %s %s %s",
-		ansiDim, fmt.Sprintf("%-11s", label), ansiReset,
-		bar, color+pctStr+ansiReset, ansiDim+"left"+ansiReset)
+		ansiWhite, fmt.Sprintf("%-11s", label), ansiReset,
+		bar, color+pctStr+ansiReset, ansiWhite+"left"+ansiReset)
 	if win.ResetAt != nil {
-		line += ansiDim + " · " + humanDuration(time.Until(*win.ResetAt)) + ansiReset
+		line += ansiWhite + " · " + humanDuration(time.Until(*win.ResetAt)) + ansiReset
 	}
 	if win.TotalCount != nil && *win.TotalCount > 0 {
 		rem := int64(0)
 		if win.RemainingCount != nil {
 			rem = *win.RemainingCount
 		}
-		line += ansiDim + " · " + humanInt(rem) + "/" + humanInt(*win.TotalCount) + ansiReset
+		line += ansiWhite + " · " + humanInt(rem) + "/" + humanInt(*win.TotalCount) + ansiReset
 	}
 	fmt.Fprintln(w, line)
 }
 
 // renderStatusLine draws a label/value info row (MCP tools, expiry, models...).
 func renderStatusLine(w io.Writer, label, value string) {
-	fmt.Fprintf(w, "  %s%s%s %s\n", ansiDim, fmt.Sprintf("%-11s", label), ansiReset, value)
+	fmt.Fprintf(w, "  %s%s%s %s\n", ansiWhite, fmt.Sprintf("%-11s", label), ansiReset, value)
 }
 
 // pctColor maps remaining percentage to threshold color (shared by status

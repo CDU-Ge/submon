@@ -94,6 +94,9 @@ const (
 	ansiYellow  = "\033[0;33m"
 	ansiMagenta = "\033[0;35m"
 	ansiDim     = "\033[2m"
+	// 辅助信息用默认前景色(终端主题的正常文字色),保证可读性;
+	// dim(灰)在浅色/低对比主题下难以辨认,仅保留给极不重要的细节。
+	ansiWhite = "\033[0;39m"
 )
 
 // contextPlainSegment: layout B 的上下文段 "ctx 15% used"。
@@ -115,7 +118,7 @@ func contextPlainSegment(cw contextWindowInfo) string {
 // quotaDetailedSegment: layout B 的配额段 "5h 72% left (1h9m) · weekly 74% left (5d10h)"。
 func quotaDetailedSegment(cfg *config.Config, modelProv model.Provider, now time.Time) string {
 	segs := quotaWindowSegs(cfg, modelProv, now, true)
-	return strings.Join(segs, ansiDim+" · "+ansiReset)
+	return strings.Join(segs, ansiWhite+" · "+ansiReset)
 }
 
 // quotaMinimalSegment: layout C 的配额段 "72%/74% (↻2m)"。
@@ -124,7 +127,7 @@ func quotaMinimalSegment(cfg *config.Config, modelProv model.Provider, now time.
 	if len(segs) == 0 {
 		return ""
 	}
-	out := strings.Join(segs, ansiDim+"/"+ansiReset)
+	out := strings.Join(segs, ansiWhite+"/"+ansiReset)
 	if age := freshTrailer(cfg, now); age != "" {
 		out += " " + age
 	}
@@ -148,7 +151,7 @@ func quotaWindowSegs(cfg *config.Config, modelProv model.Provider, now time.Time
 	entry := file.Get(name)
 	if entry == nil || entry.Snapshot == nil {
 		maybeSelfHeal(path, entry, cfg, now)
-		return []string{ansiDim + "⚡" + badgeText(name) + " 刷新中…" + ansiReset}
+		return []string{ansiWhite + "⚡" + badgeText(name) + " 刷新中…" + ansiReset}
 	}
 	s := entry.Snapshot
 	if now.Sub(s.FetchedAt) > time.Duration(cfg.Cache.TTLSeconds)*time.Second {
@@ -174,9 +177,9 @@ func quotaWindowSegs(cfg *config.Config, modelProv model.Provider, now time.Time
 			segs = append(segs, color+fmt.Sprintf("%.0f%%", *w.RemainingPct)+ansiReset)
 			continue
 		}
-		seg := fmt.Sprintf("%s %s%.0f%%%s left", ansiDim+label+ansiReset, color, *w.RemainingPct, ansiReset)
+		seg := fmt.Sprintf("%s %s%.0f%%%s left", ansiWhite+label+ansiReset, color, *w.RemainingPct, ansiReset)
 		if w.ResetAt != nil {
-			seg += fmt.Sprintf(" %s(%s)%s", ansiDim, humanDuration(time.Until(*w.ResetAt)), ansiReset)
+			seg += fmt.Sprintf(" %s(%s)%s", ansiWhite, humanDuration(time.Until(*w.ResetAt)), ansiReset)
 		}
 		segs = append(segs, seg)
 	}
@@ -184,7 +187,7 @@ func quotaWindowSegs(cfg *config.Config, modelProv model.Provider, now time.Time
 		return nil
 	}
 	if verbose && modelProv != name {
-		segs = append([]string{ansiDim + "⚡" + ansiReset + providerBadge(s.Provider)}, segs...)
+		segs = append([]string{ansiWhite + "⚡" + ansiReset + providerBadge(s.Provider)}, segs...)
 	}
 	return segs
 }
@@ -212,7 +215,7 @@ func freshTrailer(cfg *config.Config, now time.Time) string {
 	if age > ttl {
 		return ansiYellow + fmt.Sprintf("(刷新中·%s前)", humanDuration(age)) + ansiReset
 	}
-	return ansiDim + fmt.Sprintf("(↻%s)", humanDuration(ttl-age)) + ansiReset
+	return ansiWhite + fmt.Sprintf("(↻%s)", humanDuration(ttl-age)) + ansiReset
 }
 
 // renderStatusline 按配置的 layout 方案渲染。
@@ -240,6 +243,7 @@ func renderStatusline(in *statuslineInput, cfg *config.Config, now time.Time) st
 }
 
 // renderLayoutA: robbyrussell 经典布局(当前默认)。
+// 顶层段之间统一用 " - " 分隔:➜ dir git:(main)✗ - Model [ctx] - 2h50m 81% left - weekly 69% left 5d6h (↻3m)
 func renderLayoutA(in *statuslineInput, cfg *config.Config, modelName, dir, cwd string, now time.Time) string {
 	var segs []string
 
@@ -262,7 +266,8 @@ func renderLayoutA(in *statuslineInput, cfg *config.Config, modelName, dir, cwd 
 	if q := quotaSegment(cfg, in.modelProvider(), now); q != "" {
 		segs = append(segs, q)
 	}
-	return strings.Join(segs, " ")
+	sep := ansiWhite + " - " + ansiReset
+	return strings.Join(segs, sep)
 }
 
 // renderLayoutB: 信息优先 —— model 打头,细粒度分段,branch 用 ⎇ 符号。
@@ -282,12 +287,12 @@ func renderLayoutB(in *statuslineInput, cfg *config.Config, modelName, dir, cwd 
 		if d, err := gitDirty(cwd); err == nil && d {
 			dirtyMark = ansiRed + "*" + ansiReset
 		}
-		segs = append(segs, ansiDim+"⎇"+ansiReset+ansiMagenta+branch+dirtyMark+ansiReset)
+		segs = append(segs, ansiWhite+"⎇"+ansiReset+ansiMagenta+branch+dirtyMark+ansiReset)
 	}
 	if q := quotaDetailedSegment(cfg, in.modelProvider(), now); q != "" {
 		segs = append(segs, q)
 	}
-	sep := ansiDim + " · " + ansiReset
+	sep := ansiWhite + " · " + ansiReset
 	return strings.Join(segs, sep)
 }
 
@@ -297,7 +302,7 @@ func renderLayoutC(in *statuslineInput, cfg *config.Config, modelName, dir, cwd 
 	var segs []string
 	segs = append(segs, ansiCyan+dir+ansiReset)
 	if branch, err := gitBranch(cwd); err == nil && branch != "" {
-		segs = append(segs, ansiDim+branch+ansiReset)
+		segs = append(segs, ansiWhite+branch+ansiReset)
 	}
 	if in.ContextWindow.UsedPercentage != nil {
 		segs = append(segs, fmt.Sprintf("%s%d%%%s", ansiGreen, *in.ContextWindow.UsedPercentage, ansiReset))
@@ -308,7 +313,7 @@ func renderLayoutC(in *statuslineInput, cfg *config.Config, modelName, dir, cwd 
 	if q := quotaMinimalSegment(cfg, in.modelProvider(), now); q != "" {
 		segs = append(segs, q)
 	}
-	sep := ansiDim + " · " + ansiReset
+	sep := ansiWhite + " · " + ansiReset
 	return strings.Join(segs, sep)
 }
 
@@ -323,6 +328,7 @@ func gitSegment(cwd string) string {
 		dirty = " " + ansiYellow + "✗" + ansiReset
 	}
 	return ansiBlue + "git:(" + ansiReset + ansiBRed + branch + ansiReset + ansiBlue + ")" + ansiReset + dirty
+
 }
 
 func gitBranch(cwd string) (string, error) {
@@ -377,14 +383,14 @@ func contextSegment(cw contextWindowInfo) string {
 	pct := float64(*cw.TotalInputTokens) / float64(effective) * 100
 	if notes > 0 {
 		// 有环境变量干预:额外展示有效上限,百分比基于它。
-		return ansiDim + "[" + ansiReset + used + ansiDim + "·压缩点" + ansiReset +
-			humanTokens(float64(effective)) + fmt.Sprintf(" %.0f%%", pct) + ansiDim + "]" + ansiReset
+		return ansiWhite + "[" + ansiReset + used + ansiWhite + "·压缩点" + ansiReset +
+			humanTokens(float64(effective)) + fmt.Sprintf(" %.0f%%", pct) + ansiWhite + "]" + ansiReset
 	}
 	pctStr := fmt.Sprintf(" %.0f%%", pct)
 	if cw.UsedPercentage != nil {
 		pctStr = fmt.Sprintf(" %d%%", *cw.UsedPercentage)
 	}
-	return ansiDim + "[" + ansiReset + used + "/" + humanTokens(float64(total)) + pctStr + ansiDim + "]" + ansiReset
+	return ansiWhite + "[" + ansiReset + used + "/" + humanTokens(float64(total)) + pctStr + ansiWhite + "]" + ansiReset
 }
 
 // humanTokens 把 token 数格式化为紧凑形式:1.2M / 183.4k / 890。
@@ -440,7 +446,7 @@ func quotaSegment(cfg *config.Config, modelProv model.Provider, now time.Time) s
 		if entry != nil && entry.LastErr != "" {
 			hint = entry.LastErr
 		}
-		return ansiDim + "⚡" + badgeText(name) + " " + hint + ansiReset
+		return ansiWhite + "⚡" + badgeText(name) + " " + hint + ansiReset
 	}
 	s := entry.Snapshot
 
@@ -461,10 +467,10 @@ func quotaSegment(cfg *config.Config, modelProv model.Provider, now time.Time) s
 	}
 	out := ""
 	if modelProv != name {
-		out = ansiDim + "⚡" + ansiReset + providerBadge(s.Provider) + " "
+		out = ansiWhite + "⚡" + ansiReset + providerBadge(s.Provider) + " "
 	}
-	// 窗口间分隔:dim " - ",比 "·" 更有分组感。
-	out += strings.Join(parts, ansiDim+" - "+ansiReset)
+	// 窗口间分隔:与顶层段一致的 " - "。
+	out += strings.Join(parts, ansiWhite+" - "+ansiReset)
 
 	// 新鲜度:过期显示黄色 age,新鲜显示距下次刷新倒计时。
 	age := now.Sub(s.FetchedAt)
@@ -473,7 +479,7 @@ func quotaSegment(cfg *config.Config, modelProv model.Provider, now time.Time) s
 		out += ansiYellow + fmt.Sprintf(" (刷新中·%s前)", humanDuration(age)) + ansiReset
 	default:
 		next := ttl - age
-		out += ansiDim + fmt.Sprintf(" (↻%s)", humanDuration(next)) + ansiReset
+		out += ansiWhite + fmt.Sprintf(" (↻%s)", humanDuration(next)) + ansiReset
 	}
 	return out
 }
@@ -546,8 +552,10 @@ func resolveStatuslineProvider(cfg *config.Config) (model.Provider, error) {
 
 // colorizeWindow 渲染一个窗口段,两种形态:
 //
-//	short(5h):      "3h8m 86% left"   —— 倒计时打头(倒计时是主信息)
+//	short(5h):      "3h8m 86% left"        —— 倒计时打头(倒计时是主信息)
 //	long(weekly):   "weekly 70% left 5d7h" —— 标签打头,倒计时收尾
+//
+// 辅助文本(倒计时/标签/left)用正常前景色,百分比保持阈值变色。
 func colorizeWindow(prefix string, w *model.Window, now time.Time, cfg *config.Config) string {
 	if w.RemainingPct == nil && w.UsedPct == nil {
 		return prefix + " n/a"
@@ -558,17 +566,17 @@ func colorizeWindow(prefix string, w *model.Window, now time.Time, cfg *config.C
 		pctStr = fmt.Sprintf("%.0f%%", pct)
 		color = pctColor(pct, cfg)
 	}
-	left := ansiDim + "left" + ansiReset
+	left := ansiWhite + "left" + ansiReset
 
 	// 5h 窗口:倒计时在前(时间紧迫感),百分比在后。
 	if w.Label == "5h" && w.ResetAt != nil {
-		return ansiDim + humanDuration(time.Until(*w.ResetAt)) + ansiReset + " " +
+		return ansiWhite + humanDuration(time.Until(*w.ResetAt)) + ansiReset + " " +
 			color + pctStr + ansiReset + " " + left
 	}
 	// weekly/其他:标签 + 百分比 + 倒计时收尾。
-	out := ansiDim + prefix + ansiReset + " " + color + pctStr + ansiReset + " " + left
+	out := ansiWhite + prefix + ansiReset + " " + color + pctStr + ansiReset + " " + left
 	if w.ResetAt != nil {
-		out += " " + ansiDim + humanDuration(time.Until(*w.ResetAt)) + ansiReset
+		out += " " + ansiWhite + humanDuration(time.Until(*w.ResetAt)) + ansiReset
 	}
 	return out
 }
