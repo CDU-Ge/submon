@@ -16,7 +16,7 @@ import (
 // the secret package). Tokens never appear in plaintext in config.toml.
 var tokenCmd = &cobra.Command{
 	Use:   "token",
-	Short: "Manage provider tokens (encrypted at rest)",
+	Short: "管理 provider token(加密存储)",
 }
 
 var tokenStdin bool
@@ -37,12 +37,12 @@ func parseSlot(slot string) (get func(*config.Config) string, set func(*config.C
 		return func(c *config.Config) string { return c.Notify.Gotify.AppToken },
 			func(c *config.Config, v string) { c.Notify.Gotify.AppToken = v }, nil
 	}
-	return nil, nil, fmt.Errorf("unknown slot %q (valid: %s)", slot, strings.Join(tokenSlots(), ", "))
+	return nil, nil, fmt.Errorf("未知槽位 %q(可选: %s)", slot, strings.Join(tokenSlots(), ", "))
 }
 
 var tokenSetCmd = &cobra.Command{
 	Use:   "set <slot> [value]",
-	Short: "Encrypt and store a token",
+	Short: "加密存储一个 token",
 	Long: "Encrypt a token and write it to config.toml as enc:v1:...\n\n" +
 		"Slots: zhipu.token, minimax.token, gotify.app_token\n\n" +
 		"With no value argument (or value '-') the token is read without echo\n" +
@@ -64,7 +64,7 @@ var tokenSetCmd = &cobra.Command{
 			}
 		}
 		if value == "" {
-			return fmt.Errorf("empty token")
+			return fmt.Errorf("token 不能为空")
 		}
 		enc, err := secret.Encrypt(value)
 		if err != nil {
@@ -78,14 +78,14 @@ var tokenSetCmd = &cobra.Command{
 		if err := config.Save(cfg); err != nil {
 			return err
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "%s stored encrypted (%s)\n", slot, maskEnc(enc))
+		fmt.Fprintf(cmd.OutOrStdout(), "%s 已加密存储(%s)\n", slot, maskEnc(enc))
 		return nil
 	},
 }
 
 var tokenGetCmd = &cobra.Command{
 	Use:   "get <slot>",
-	Short: "Decrypt and print a token (for scripting)",
+	Short: "解密输出 token(供脚本使用)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		get, _, err := parseSlot(args[0])
@@ -98,7 +98,7 @@ var tokenGetCmd = &cobra.Command{
 		}
 		v := get(cfg)
 		if v == "" {
-			return fmt.Errorf("%s is not set", args[0])
+			return fmt.Errorf("%s 未设置", args[0])
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), v)
 		return nil
@@ -107,7 +107,7 @@ var tokenGetCmd = &cobra.Command{
 
 var tokenLsCmd = &cobra.Command{
 	Use:   "ls",
-	Short: "List token slots and their storage form",
+	Short: "列出 token 槽位与存储形态",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
 		if err != nil {
@@ -122,7 +122,7 @@ var tokenLsCmd = &cobra.Command{
 			case secret.IsEncrypted(v):
 				fmt.Fprintf(cmd.OutOrStdout(), "%-16s %s\n", slot, maskEnc(v))
 			default:
-				fmt.Fprintf(cmd.OutOrStdout(), "%-16s PLAINTEXT (migrate: submon token set %s)\n", slot, slot)
+				fmt.Fprintf(cmd.OutOrStdout(), "%-16s 明文(建议迁移: submon token set %s)\n", slot, slot)
 			}
 		}
 		return nil
@@ -131,7 +131,7 @@ var tokenLsCmd = &cobra.Command{
 
 var tokenUnsetCmd = &cobra.Command{
 	Use:   "unset <slot>",
-	Short: "Remove a stored token",
+	Short: "删除已存储的 token",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		_, set, err := parseSlot(args[0])
@@ -146,7 +146,7 @@ var tokenUnsetCmd = &cobra.Command{
 		if err := config.Save(cfg); err != nil {
 			return err
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), args[0], "removed")
+		fmt.Fprintln(cmd.OutOrStdout(), args[0], "已删除")
 		return nil
 	},
 }
@@ -174,7 +174,7 @@ func readSecret(plainStdin bool) (string, error) {
 		}
 		return strings.TrimSpace(string(raw)), nil
 	}
-	fmt.Fprint(os.Stderr, "token: ")
+	fmt.Fprint(os.Stderr, "请输入 token: ")
 	raw, err := term.ReadPassword(int(os.Stdin.Fd()))
 	fmt.Fprintln(os.Stderr)
 	if err != nil {

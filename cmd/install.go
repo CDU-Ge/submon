@@ -26,15 +26,15 @@ const (
 
 var installCmd = &cobra.Command{
 	Use:   "install",
-	Short: "Install the systemd user timer for `submon watch`",
-	Long: "Generate and install the systemd user units (service + timer) that run\n" +
-		"`submon watch` on a schedule, then enable the timer.\n\n" +
-		"  submon install            install + enable\n" +
-		"  submon install --print    show generated units without writing\n" +
-		"  submon install --uninstall  stop + disable + remove units\n\n" +
-		"Environment credentials (ANTHROPIC_AUTH_TOKEN etc.) are NOT copied into\n" +
-		"the unit — put them in ~/.config/submon/config.toml (submon token set)\n" +
-		"or drop a file in ~/.config/environment.d/ instead.",
+	Short: "安装 `submon watch` 的 systemd 用户定时器",
+	Long: "生成并安装定期运行 `submon watch` 的 systemd 用户单元(service + timer),\n" +
+		"然后启用 timer。\n\n" +
+		"  submon install              安装并启用\n" +
+		"  submon install --print      只预览生成的单元,不写入\n" +
+		"  submon install --uninstall  停止、禁用并删除单元\n\n" +
+		"环境变量凭据(ANTHROPIC_AUTH_TOKEN 等)不会写入 unit 文件 —\n" +
+		"请放在 ~/.config/submon/config.toml(submon token set)\n" +
+		"或 ~/.config/environment.d/ 中。",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if installUninst {
 			return uninstallUnits(cmd)
@@ -69,12 +69,12 @@ var installCmd = &cobra.Command{
 		if err := os.WriteFile(tmrPath, []byte(tmr), 0o644); err != nil {
 			return err
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "installed:", svcPath)
-		fmt.Fprintln(cmd.OutOrStdout(), "installed:", tmrPath)
+		fmt.Fprintln(cmd.OutOrStdout(), "已安装:", svcPath)
+		fmt.Fprintln(cmd.OutOrStdout(), "已安装:", tmrPath)
 
 		if !hasSystemdUser() {
-			fmt.Fprintln(cmd.OutOrStderr(), "note: systemd user session not detected; units written but not enabled")
-			fmt.Fprintln(cmd.OutOrStderr(), "enable later with: systemctl --user daemon-reload && systemctl --user enable --now", unitName+".timer")
+			fmt.Fprintln(cmd.OutOrStderr(), "提示: 未检测到 systemd 用户会话,单元已写入但未启用")
+			fmt.Fprintln(cmd.OutOrStderr(), "稍后手动启用: systemctl --user daemon-reload && systemctl --user enable --now", unitName+".timer")
 			return nil
 		}
 		for _, args := range [][]string{
@@ -86,8 +86,8 @@ var installCmd = &cobra.Command{
 				return fmt.Errorf("systemctl --user %s: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))
 			}
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "timer enabled:", unitName+".timer")
-		fmt.Fprintln(cmd.OutOrStdout(), "next runs scheduled every", installTimer)
+		fmt.Fprintln(cmd.OutOrStdout(), "timer 已启用:", unitName+".timer")
+		fmt.Fprintln(cmd.OutOrStdout(), "调度间隔:", installTimer)
 		return nil
 	},
 }
@@ -104,7 +104,7 @@ func uninstallUnits(cmd *cobra.Command) error {
 			return err
 		}
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), "removed units from", dir)
+	fmt.Fprintln(cmd.OutOrStdout(), "已删除单元:", dir)
 	return nil
 }
 
@@ -150,8 +150,8 @@ WantedBy=timers.target
 `
 
 func init() {
-	installCmd.Flags().BoolVar(&installPrint, "print", false, "print generated units without installing")
-	installCmd.Flags().BoolVar(&installUninst, "uninstall", false, "stop, disable and remove the units")
-	installCmd.Flags().StringVar(&installTimer, "interval", "5m", "timer interval (systemd duration, e.g. 5m, 15m)")
+	installCmd.Flags().BoolVar(&installPrint, "print", false, "只打印生成的单元,不安装")
+	installCmd.Flags().BoolVar(&installUninst, "uninstall", false, "停止、禁用并删除单元")
+	installCmd.Flags().StringVar(&installTimer, "interval", "5m", "触发间隔(systemd 时长格式,如 5m、15m)")
 	rootCmd.AddCommand(installCmd)
 }

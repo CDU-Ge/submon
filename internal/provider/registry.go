@@ -8,45 +8,40 @@ import (
 	"github.com/ge/subscription-monitor/internal/model"
 )
 
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
+// DefaultZhipuBaseURL 是 zhipu 的内置默认基址(智谱开放平台)。
+const DefaultZhipuBaseURL = "https://open.bigmodel.cn/api/anthropic"
 
-// Build returns the source for a provider name, wiring credentials from
-// config + environment:
+// Build 构造 provider 数据源。凭据解析顺序:环境变量 > 配置文件 > 内置默认。
 //
-//	zhipu:   cfg.Zhipu.Token       or ANTHROPIC_AUTH_TOKEN
-//	         cfg.Zhipu.BaseURL     or ANTHROPIC_BASE_URL
-//	minimax: cfg.MiniMax.Token    or MINIMAX_TOKEN
+//	zhipu:   ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL > [zhipu] token/base_url > 默认基址
+//	minimax: MINIMAX_TOKEN > [minimax] token
 //
-// Callers pass an already-decrypted config (Config.DecryptSecrets).
+// 调用方需传入已解密的配置(Config.DecryptSecrets)。
 func Build(name model.Provider, cfg *config.Config) (Source, error) {
 	switch name {
 	case model.ProviderZhipu:
-		z := &Zhipu{Token: cfg.Zhipu.Token, BaseURL: cfg.Zhipu.BaseURL}
-		if z.Token == "" {
-			z.Token = envOr("ANTHROPIC_AUTH_TOKEN", "")
-		}
-		if z.BaseURL == "" {
-			z.BaseURL = envOr("ANTHROPIC_BASE_URL", "")
-		}
-		if z.BaseURL == "" {
-			return nil, &ErrNotConfigured{Reason: "zhipu: no base URL (set ANTHROPIC_BASE_URL or config zhipu.base_url)"}
-		}
-		// The monitor endpoints live on the origin, not under /api/anthropic.
-		z.BaseURL = originOf(z.BaseURL)
-		return z, nil
+		baseURL := firstNonEmpty(os.Getenv("ANTHROPIC_BASE_URL"), cfg.Zhipu.BaseURL, DefaultZhipuBaseURL)
+		token := firstNonEmpty(os.Getenv("ANTHROPIC_AUTH_TOKEN"), cfg.Zhipu.Token)
+		// 监控接口挂在源站根路径,不在 /api/anthropic 之下。
+		return &Zhipu{Token: token, BaseURL: originOf(baseURL)}, nil
 	case model.ProviderMinimax:
-		return &MiniMax{Token: cfg.MiniMax.Token}, nil
+		token := firstNonEmpty(os.Getenv("MINIMAX_TOKEN"), cfg.MiniMax.Token)
+		return &MiniMax{Token: token}, nil
 	}
-	return nil, &ErrNotConfigured{Reason: "unknown provider: " + string(name)}
+	return nil, &ErrNotConfigured{Reason: "未知 provider: " + string(name)}
 }
 
-// originOf strips the path from a base URL ("https://open.bigmodel.cn/api/anthropic"
-// → "https://open.bigmodel.cn").
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// originOf 去掉基址的路径部分("https://open.bigmodel.cn/api/anthropic"
+// → "https://open.bigmodel.cn")。
 func originOf(baseURL string) string {
 	if i := strings.Index(baseURL, "://"); i >= 0 {
 		rest := baseURL[i+3:]

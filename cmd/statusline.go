@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -60,10 +61,10 @@ var statuslineProvider string
 
 var statuslineCmd = &cobra.Command{
 	Use:   "statusline",
-	Short: "One-line status for Claude Code (dir/git/model/context + quotas)",
-	Long: "Print a robbyrussell-inspired line combining workspace dir, git branch,\n" +
-		"model, context window usage and subscription quotas (cache-only reads).\n" +
-		"Provider pick order: --provider > ANTHROPIC_BASE_URL detection > config default.",
+	Short: "Claude Code 状态栏(目录/git/模型/上下文 + 配额)",
+	Long: "输出 robbyrussell 风格的状态行:目录、git 分支、模型、上下文窗口用量\n" +
+		"与订阅配额(只读缓存,不联网)。\n" +
+		"provider 选择顺序: --provider > ANTHROPIC_BASE_URL 自动识别 > 配置默认值。",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
 		if err != nil {
@@ -164,18 +165,57 @@ func gitDirty(cwd string) (bool, error) {
 	return false, err
 }
 
-// contextSegment renders "[12.3k/200k 6%]".
+// contextSegment 渲染 "[12.3k/200k 6%]"。
+//
+// 两个 Claude Code 环境变量会修正"实际上下文上限":
+//   - CLAUDE_CODE_MAX_CONTEXT_TOKENS: 覆盖 Claude Code 对当前模型上下文
+//     窗口大小的假设(经网关路由、窗口与内置假设不符时使用)
+//   - CLAUDE_CODE_AUTO_COMPACT_WINDOW: 直接决定 auto-compact 触发点
+//     (100K–1M,例如 500000 = 对话到 500K 时压缩)
+//
+// 有效上限 = min(AUTO_COMPACT_WINDOW, 实际窗口, MAX_CONTEXT_TOKENS)。
+// 设置了任一变量时显示 "实际窗口" 与有效上限的对比,否则与 Claude Code
+// 自身报的百分比保持一致。
 func contextSegment(cw contextWindowInfo) string {
 	if cw.TotalInputTokens == nil || cw.ContextWindowSize == nil || *cw.ContextWindowSize <= 0 {
 		return ""
 	}
 	usedK := fmt.Sprintf("%.1fk", float64(*cw.TotalInputTokens)/1000)
-	totalK := fmt.Sprintf("%.0fk", float64(*cw.ContextWindowSize)/1000)
-	pct := ""
-	if cw.UsedPercentage != nil {
-		pct = fmt.Sprintf(" %d%%", *cw.UsedPercentage)
+	total := *cw.ContextWindowSize
+
+	effective := total
+	notes := 0
+	if v := envInt64("CLAUDE_CODE_MAX_CONTEXT_TOKENS"); v > 0 && v < effective {
+		effective = v
+		notes++
 	}
-	return ansiDim + "[" + ansiReset + usedK + "/" + totalK + pct + ansiDim + "]" + ansiReset
+	if v := envInt64("CLAUDE_CODE_AUTO_COMPACT_WINDOW"); v > 0 && v < effective {
+		effective = v
+		notes++
+	}
+
+	// 以有效上限计算百分比(与 Claude Code 的压缩触发口径对齐)。
+	pct := float64(*cw.TotalInputTokens) / float64(effective) * 100
+	if notes > 0 {
+		// 有环境变量干预:额外展示有效上限,百分比基于它。
+		effK := fmt.Sprintf("%.0fk", float64(effective)/1000)
+		return ansiDim + "[" + ansiReset + usedK + ansiDim + "·压缩点" + ansiReset + effK +
+			fmt.Sprintf(" %.0f%%", pct) + ansiDim + "]" + ansiReset
+	}
+	if cw.UsedPercentage != nil {
+		return ansiDim + "[" + ansiReset + usedK + "/" + totalK(total) + fmt.Sprintf(" %d%%", *cw.UsedPercentage) + ansiDim + "]" + ansiReset
+	}
+	return ansiDim + "[" + ansiReset + usedK + "/" + totalK(total) + fmt.Sprintf(" %.0f%%", pct) + ansiDim + "]" + ansiReset
+}
+
+func totalK(v int64) string { return fmt.Sprintf("%.0fk", float64(v)/1000) }
+
+func envInt64(key string) int64 {
+	v, err := strconv.ParseInt(strings.TrimSpace(os.Getenv(key)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 // quotaSegment reads the cache and renders
@@ -197,7 +237,7 @@ func quotaSegment(cfg *config.Config, modelProv model.Provider, now time.Time) s
 	}
 	entry := file.Get(name)
 	if entry == nil || entry.Snapshot == nil {
-		hint := "no data, run submon status --force"
+		hint := "暂无数据,运行 submon status --force"
 		if entry != nil && entry.LastErr != "" {
 			hint = entry.LastErr
 		}
@@ -316,6 +356,6 @@ func stripANSI(s string) string {
 }
 
 func init() {
-	statuslineCmd.Flags().StringVar(&statuslineProvider, "provider", "", "provider to display (zhipu|minimax)")
+	statuslineCmd.Flags().StringVar(&statuslineProvider, "provider", "", "要展示的 provider(zhipu|minimax)")
 	rootCmd.AddCommand(statuslineCmd)
 }

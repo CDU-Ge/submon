@@ -12,33 +12,35 @@ import (
 )
 
 var (
-	notifyTest bool
 	cacheClear bool
 )
 
 var notifyCmd = &cobra.Command{
 	Use:   "notify",
-	Short: "Interact with Gotify notifications",
+	Short: "通知管理(测试推送 / 查看告警状态)",
+}
+
+// notifyTestCmd 发送测试推送,验证 Gotify 链路。
+var notifyTestCmd = &cobra.Command{
+	Use:   "test",
+	Short: "发送一条测试推送",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if !notifyTest {
-			return cmd.Usage()
-		}
 		cfg, err := loadDecryptedConfig()
 		if err != nil {
 			return err
 		}
 		g := &notify.Gotify{URL: cfg.Notify.Gotify.URL, AppToken: cfg.Notify.Gotify.AppToken}
-		if err := g.Send("submon test", "Gotify connectivity OK", cfg.Notify.Gotify.Priority); err != nil {
+		if err := g.Send("submon 测试", "通知链路正常", cfg.Notify.Gotify.Priority); err != nil {
 			return err
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "notification sent")
+		fmt.Fprintln(cmd.OutOrStdout(), "已发送测试推送")
 		return nil
 	},
 }
 
 var cacheCmd = &cobra.Command{
 	Use:   "cache",
-	Short: "Inspect or clear the snapshot cache",
+	Short: "查看或清空快照缓存",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
 		if err != nil {
@@ -66,7 +68,6 @@ var cacheCmd = &cobra.Command{
 }
 
 func init() {
-	notifyCmd.Flags().BoolVar(&notifyTest, "test", false, "send a test push")
-	cacheCmd.Flags().BoolVar(&cacheClear, "clear", false, "delete the cache file")
+	cacheCmd.Flags().BoolVar(&cacheClear, "clear", false, "删除缓存文件")
 	rootCmd.AddCommand(notifyCmd, cacheCmd)
 }

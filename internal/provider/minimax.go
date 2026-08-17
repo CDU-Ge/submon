@@ -89,7 +89,7 @@ func (m *MiniMax) resolveToken() (string, error) {
 	if v := os.Getenv("MINIMAX_TOKEN"); v != "" {
 		return v, nil
 	}
-	return "", &ErrNotConfigured{Reason: "no MiniMax token: set [minimax] token in config.toml or MINIMAX_TOKEN"}
+	return "", &ErrNotConfigured{Reason: "缺少 minimax token:设置 MINIMAX_TOKEN 或配置 [minimax] token"}
 }
 
 // remainsResponse: fields live at the top level (no data wrapper);

@@ -19,10 +19,9 @@ var (
 
 var encCmd = &cobra.Command{
 	Use:   "enc [value]",
-	Short: "Encrypt (or decrypt) a value with the submon master key",
-	Long: "Encrypt a value into enc:v1:... form using the submon master key\n" +
-		"(OS keyring-backed, see `submon token`), or decrypt with -d.\n\n" +
-		"With no value argument or value '-', read from stdin.",
+	Short: "用 submon 主密钥加密(或解密)任意值",
+	Long: "用 submon 主密钥把任意值加密为 enc:v1:... 形式,-d 解密。\n\n" +
+		"不带参数或参数为 '-' 时从 stdin 读取。",
 	Args: cobra.RangeArgs(0, 1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		value := ""
@@ -36,7 +35,7 @@ var encCmd = &cobra.Command{
 			value = strings.TrimSpace(string(raw))
 		}
 		if value == "" {
-			return fmt.Errorf("empty input")
+			return fmt.Errorf("输入为空")
 		}
 		if encDecrypt {
 			out, err := secret.Decrypt(value)
@@ -56,6 +55,6 @@ var encCmd = &cobra.Command{
 }
 
 func init() {
-	encCmd.Flags().BoolVarP(&encDecrypt, "decrypt", "d", false, "decrypt an enc:v1:... value instead")
+	encCmd.Flags().BoolVarP(&encDecrypt, "decrypt", "d", false, "改为解密 enc:v1:... 值")
 	rootCmd.AddCommand(encCmd)
 }

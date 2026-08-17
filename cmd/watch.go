@@ -20,10 +20,9 @@ import (
 // notifications on level *transitions* only, then exit.
 var watchCmd = &cobra.Command{
 	Use:   "watch",
-	Short: "One-shot refresh + threshold alerts (for systemd timers)",
-	Long: "Refreshes all configured providers, updates the shared cache, and pushes\n" +
-		"a Gotify notification when the lowest remaining percentage crosses a\n" +
-		"threshold (warn/crit) or recovers. Designed to run once per timer tick.",
+	Short: "单次刷新 + 阈值告警(供 systemd timer 调用)",
+	Long: "刷新全部 provider、更新共享缓存,并在最低剩余百分比跨越阈值\n" +
+		"(warn/crit)或回升时推送 Gotify 通知。设计为每次 timer 触发运行一次。",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := loadDecryptedConfig()
 		if err != nil {
@@ -54,7 +53,7 @@ var watchCmd = &cobra.Command{
 			}
 		}
 		if failed {
-			return fmt.Errorf("one or more providers failed to refresh")
+			return fmt.Errorf("部分 provider 刷新失败")
 		}
 		return nil
 	},
@@ -121,23 +120,43 @@ func formatAlert(name model.Provider, snap *model.Snapshot, level string, pct fl
 		if w == nil || w.RemainingPct == nil {
 			continue
 		}
-		s := fmt.Sprintf("%s: %.0f%% left", w.Label, *w.RemainingPct)
+		s := fmt.Sprintf("%s 窗口: 剩余 %.0f%%", windowLabel(w.Label), *w.RemainingPct)
 		if w.ResetAt != nil {
-			s += " (resets in " + humanDuration(time.Until(*w.ResetAt)) + ")"
+			s += "(" + humanDuration(time.Until(*w.ResetAt)) + "后重置)"
 		}
 		windows = append(windows, s)
 	}
-	body := fmt.Sprintf("[%s] lowest remaining %.0f%%\n%s",
-		level, pct, joinLines(windows))
+	body := fmt.Sprintf("最低剩余 %.0f%%,当前级别 %s\n%s", pct, level, joinLines(windows))
 
 	switch level {
 	case "crit":
-		return fmt.Sprintf("submon %s: quota critical", name), body
+		return fmt.Sprintf("submon %s: 配额严重不足", providerCN(name)), body
 	case "warn":
-		return fmt.Sprintf("submon %s: quota low", name), body
+		return fmt.Sprintf("submon %s: 配额偏低", providerCN(name)), body
 	default:
-		return fmt.Sprintf("submon %s: recovered", name), "Quota back above thresholds.\n" + joinLines(windows)
+		return fmt.Sprintf("submon %s: 配额已恢复", providerCN(name)), "配额回升越过阈值。\n" + joinLines(windows)
 	}
+}
+
+// providerNick 中文 provider 名。
+func providerCN(name model.Provider) string {
+	if name == model.ProviderZhipu {
+		return "智谱"
+	}
+	return "MiniMax"
+}
+
+// windowLabel 窗口中文标签。
+func windowLabel(l string) string {
+	switch l {
+	case "5h":
+		return "5小时"
+	case "week":
+		return "每周"
+	case "month":
+		return "每月"
+	}
+	return l
 }
 
 func joinLines(lines []string) string {

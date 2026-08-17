@@ -21,16 +21,15 @@ import (
 // its default or a migrated value.
 var generateCmd = &cobra.Command{
 	Use:   "generate",
-	Short: "Generate project files",
+	Short: "生成各类文件",
 }
 
 var generateConfigCmd = &cobra.Command{
 	Use:   "config",
-	Short: "Create/update config.toml without losing existing settings",
-	Long: "Merge-generate ~/.config/submon/config.toml against the current schema:\n" +
-		"existing values are preserved, missing fields are filled with defaults,\n" +
-		"and a MiniMax token is migrated from ~/.minimax-config.json if present\n" +
-		"and no token is configured yet. Diffs are shown; --write applies them.",
+	Short: "生成/更新 config.toml(不丢失现有配置)",
+	Long: "按当前配置标准合并生成 ~/.config/submon/config.toml:\n" +
+		"已有配置保留,缺失字段补默认值,~/.minimax-config.json 中的 token\n" +
+		"会迁移并加密;明文 token 也会转为加密。默认只显示差异,--write 落盘。",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
 		if err != nil {
@@ -78,7 +77,7 @@ var generateConfigCmd = &cobra.Command{
 				prev, existed = string(raw), true
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), renderConfigDiff(prev, existed, generated, path, migrated))
-			fmt.Fprintln(cmd.OutOrStdout(), "dry-run: re-run with --write to apply")
+			fmt.Fprintln(cmd.OutOrStdout(), "预览模式:加 --write 参数才会实际写入")
 			return nil
 		}
 
@@ -88,9 +87,9 @@ var generateConfigCmd = &cobra.Command{
 		if err := os.WriteFile(path, []byte(generated), 0o600); err != nil {
 			return err
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "wrote", path)
+		fmt.Fprintln(cmd.OutOrStdout(), "已写入", path)
 		if migrated != "" {
-			fmt.Fprintf(cmd.OutOrStdout(), "migrated minimax token from %s (you may delete that file)\n", migrated)
+			fmt.Fprintf(cmd.OutOrStdout(), "已迁移并加密: %s(原文件可以删除了)\n", migrated)
 		}
 		return nil
 	},
@@ -101,17 +100,17 @@ var generateWrite bool
 // renderConfigDiff shows a line-by-line +/- preview of what would change.
 func renderConfigDiff(prev string, existed bool, next, path, migrated string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "target: %s\n", path)
+	fmt.Fprintf(&b, "目标: %s\n", path)
 	if migrated != "" {
-		fmt.Fprintf(&b, "would migrate minimax token from %s\n", migrated)
+		fmt.Fprintf(&b, "将迁移并加密: %s\n", migrated)
 	}
 	if !existed {
-		b.WriteString("current: <missing> — a fresh config will be created\n")
+		b.WriteString("现状: 文件不存在 — 将生成全新配置\n")
 	} else if prev == next {
-		b.WriteString("no changes\n")
+		b.WriteString("无变化\n")
 		return b.String()
 	}
-	b.WriteString("changes (− old, + new):\n")
+	b.WriteString("差异(− 旧 + 新):\n")
 	prevLines := maskSecrets(strings.Split(prev, "\n"))
 	nextLines := maskSecrets(strings.Split(next, "\n"))
 	// Simple three-zone diff: common prefix, diff middle, common suffix.
@@ -162,7 +161,7 @@ func maskSecrets(lines []string) []string {
 }
 
 func init() {
-	generateConfigCmd.Flags().BoolVar(&generateWrite, "write", false, "write the merged config (default: dry-run with diff)")
+	generateConfigCmd.Flags().BoolVar(&generateWrite, "write", false, "写入合并后的配置(默认只预览差异)")
 	generateCmd.AddCommand(generateConfigCmd)
 	rootCmd.AddCommand(generateCmd)
 }

@@ -10,9 +10,9 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "submon",
-	Short: "Subscription monitor for Zhipu / MiniMax coding plans",
-	Long: "submon monitors coding-plan quotas (Zhipu bigmodel.cn / z.ai, MiniMax)\n" +
-		"with a shared cache so the statusline never hammers the APIs.",
+	Short: "Zhipu / MiniMax 订阅配额监控",
+	Long: "submon 监控订阅配额(智谱 bigmodel.cn / z.ai、MiniMax),\n" +
+		"共享缓存保证 statusline 高频调用不打爆 API。",
 	Version:       "dev",
 	SilenceUsage:  true,
 	SilenceErrors: true,
