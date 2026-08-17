@@ -1,0 +1,39 @@
+# submon configuration.
+# Copy to ~/.config/submon/config.toml and edit.
+# Every field is optional — zhipu also reads ANTHROPIC_BASE_URL /
+# ANTHROPIC_AUTH_TOKEN from the environment; minimax falls back to
+# ~/.minimax-config.json.
+
+[zhipu]
+# Defaults to $ANTHROPIC_BASE_URL. Only the origin matters:
+# https://open.bigmodel.cn/api/anthropic and https://api.z.ai/api/anthropic
+# are both fine.
+base_url = "https://open.bigmodel.cn/api/anthropic"
+# Defaults to $ANTHROPIC_AUTH_TOKEN.
+# token = "sk-..."
+
+[minimax]
+# Defaults to ~/.minimax-config.json when unset.
+# token = "eyJ..."
+# config_path = "/home/you/.minimax-config.json"
+
+[cache]
+# Seconds a snapshot stays fresh. statusline reads the cache only; a systemd
+# timer running `submon watch` keeps it warm.
+ttl_seconds = 300
+# path = "/home/you/.cache/submon/cache.json"
+
+[notify]
+# Alert thresholds on *remaining* percentage (the lowest window wins).
+warn_below_pct = 20.0
+crit_below_pct = 5.0
+
+[notify.gotify]
+url = "https://gotify.example.com"
+app_token = "Axxxxxxxxxxxx"
+# 1-10, default 5.
+priority = 5
+
+[statusline]
+# Fallback provider when ANTHROPIC_BASE_URL can't be detected: "zhipu" | "minimax".
+default_provider = "zhipu"
