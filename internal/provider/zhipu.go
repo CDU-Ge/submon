@@ -60,8 +60,8 @@ type quotaLimit struct {
 	Type          string        `json:"type"`
 	Unit          int           `json:"unit"`
 	Number        int           `json:"number"`
-	Percentage    *float64      `json:"percentage"` // used %
-	Usage         *int64        `json:"usage"`      // TIME_LIMIT total quota
+	Percentage    *float64      `json:"percentage"`   // used %
+	Usage         *int64        `json:"usage"`        // TIME_LIMIT total quota
 	CurrentValue  *int64        `json:"currentValue"` // TIME_LIMIT used count
 	Remaining     *int64        `json:"remaining"`
 	NextResetTime *int64        `json:"nextResetTime"` // epoch ms
@@ -78,9 +78,9 @@ type modelUsageResponse struct {
 	Msg  string `json:"msg"`
 	Data struct {
 		TotalUsage struct {
-			TotalModelCallCount int64         `json:"totalModelCallCount"`
-			TotalTokensUsage    int64         `json:"totalTokensUsage"`
-			ModelSummaryList    []modelEntry  `json:"modelSummaryList"`
+			TotalModelCallCount int64        `json:"totalModelCallCount"`
+			TotalTokensUsage    int64        `json:"totalTokensUsage"`
+			ModelSummaryList    []modelEntry `json:"modelSummaryList"`
 		} `json:"totalUsage"`
 	} `json:"data"`
 }

@@ -33,7 +33,7 @@ type contextWindowInfo struct {
 }
 
 type statuslineInput struct {
-	Workspace     struct {
+	Workspace struct {
 		CurrentDir string `json:"current_dir"`
 	} `json:"workspace"`
 	Model struct {
@@ -219,7 +219,8 @@ func quotaSegment(cfg *config.Config, modelProv model.Provider, now time.Time) s
 	if modelProv != name {
 		out = ansiDim + "⚡" + ansiReset + providerBadge(s.Provider) + " "
 	}
-	out += strings.Join(parts, " ")
+	// Window separator: thin dim slash groups 5h vs weekly while staying quiet.
+	out += strings.Join(parts, ansiDim+"/"+ansiReset)
 
 	// Freshness: age once stale, or countdown to next refresh while fresh.
 	age := now.Sub(s.FetchedAt)
@@ -282,12 +283,7 @@ func colorizeWindow(prefix string, w *model.Window, now time.Time, cfg *config.C
 	if w.RemainingPct != nil {
 		pct := *w.RemainingPct
 		pctStr = fmt.Sprintf("%.0f%%", pct)
-		switch {
-		case pct < cfg.Notify.CritBelowPct:
-			color = ansiRed
-		case pct < cfg.Notify.WarnBelowPct:
-			color = ansiYellow
-		}
+		color = pctColor(pct, cfg)
 	}
 	out := prefix + " " + color + pctStr + ansiReset + " " + ansiDim + "left" + ansiReset
 	if w.ResetAt != nil {

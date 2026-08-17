@@ -46,7 +46,7 @@ type Snapshot struct {
 	// Models lists per-model token usage over the query span (Zhipu).
 	Models []ModelUsage `json:"models,omitempty"`
 	// RawWarning carries non-fatal provider notes (missing fields etc).
-	RawWarning string `json:"raw_warning,omitempty"`
+	RawWarning string    `json:"raw_warning,omitempty"`
 	FetchedAt  time.Time `json:"fetched_at"`
 }
 

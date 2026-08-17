@@ -17,8 +17,18 @@ go build -o ~/.local/bin/submon .
 
 ### `submon status [zhipu|minimax]`
 
-Human-readable quota view (5h / weekly windows, monthly MCP quota for zhipu,
-per-model usage, reset countdowns).
+Colored panel view of every configured provider (5h / weekly windows, monthly
+MCP quota for zhipu, per-model usage, reset countdowns, data age):
+
+```
+ZHIPU · pro  fetched 3m ago
+────────────────────────────────────────────────
+  5h          ██████████░░  83% left · 2h29m
+  weekly      █████████░░░  77% left · 5d11h
+  monthly     ████████████ 100% left · 15d11h · 1.0K/1.0K
+  MCP/tools   1.0K / 1.0K remaining
+  models 24h  GLM-5.3 70.5M · GLM-4.7 122.9K
+```
 
 ```sh
 submon status            # all configured providers, cache-first
@@ -28,6 +38,7 @@ submon status --json     # machine-readable
 ```
 
 Serves cached data within the TTL (default 5 min); beyond it, refetches.
+Bars and percentages are colored by threshold (green / yellow / red).
 
 ### `submon statusline`
 
@@ -37,11 +48,12 @@ quotas. Reads the **cache only** — never the network — so it always returns
 instantly and survives API outages by showing stale data.
 
 ```
-➜ subscription-monitor git:(main)✗ GLM-5.3 [12.3k/200k 6%] 5h 97% left·4h22m W 80% left·5d13h (↻2m)
+➜ subscription-monitor git:(main)✗ GLM-5.3 [12.3k/200k 6%] 5h 97% left·4h22m / W 80% left·5d13h (↻2m)
 ```
 
 - Quota windows read `5h 97% left·4h22m`: percentage, then the `left` marker,
-  then the reset countdown.
+  then the reset countdown; the 5h and weekly windows are separated by a dim
+  `/`.
 - Smart provider badge: when the session's model already belongs to the
   displayed subscription (GLM → zhipu, MiniMax → minimax) the badge is
   omitted as redundant; otherwise `⚡ZHIPU` / `⚡MINIMAX` is shown.
@@ -72,14 +84,25 @@ cache (which keeps statusline warm), then run the alert state machine and push
 - warn → crit (below `crit_below_pct`, default 5%)
 - warn/crit → ok (recovered)
 
-Alert state is persisted in the cache file, so restarts never re-notify.
+Robustness: alert state persists in the cache file (restarts never re-notify);
+a failed Gotify push does not advance the state (retried next tick); a failed
+API fetch skips evaluation entirely (no false "recovered").
+
+### `submon install`
+
+Install and enable the systemd user units that run `submon watch` on a
+schedule — one command instead of hand-copying unit files:
 
 ```sh
-mkdir -p ~/.config/systemd/user
-cp manifests/submon-watch.{service,timer} ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now submon-watch.timer
+submon install                # write units + enable timer (5m default)
+submon install --interval 15m # custom interval
+submon install --print        # preview generated units
+submon install --uninstall    # stop, disable and remove
 ```
+
+Credentials are never baked into unit files — use `submon token set` or
+`~/.config/environment.d/`. On machines without a systemd user session the
+units are still written, with the manual enable command printed.
 
 ### `submon generate config`
 

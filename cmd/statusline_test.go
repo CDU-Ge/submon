@@ -11,10 +11,10 @@ import (
 
 func TestStripANSI(t *testing.T) {
 	for in, want := range map[string]string{
-		"GLM-5.3":         "GLM-5.3",
-		"GLM-5.2[1m]":     "GLM-5.2",
+		"GLM-5.3":          "GLM-5.3",
+		"GLM-5.2[1m]":      "GLM-5.2",
 		"\033[1mHi\033[0m": "Hi",
-		"":                "",
+		"":                 "",
 	} {
 		if got := stripANSI(in); got != want {
 			t.Errorf("stripANSI(%q) = %q, want %q", in, got, want)
@@ -74,11 +74,11 @@ func TestQuotaWindowMarkerAndBadge(t *testing.T) {
 
 func TestModelProviderDetection(t *testing.T) {
 	cases := map[string]model.Provider{
-		"glm-5.3":          model.ProviderZhipu,
-		"GLM-4.7":          model.ProviderZhipu,
-		"minimax-m2":       model.ProviderMinimax,
-		"MiniMax-M2":       model.ProviderMinimax,
-		"claude-fable-5":   "",
+		"glm-5.3":        model.ProviderZhipu,
+		"GLM-4.7":        model.ProviderZhipu,
+		"minimax-m2":     model.ProviderMinimax,
+		"MiniMax-M2":     model.ProviderMinimax,
+		"claude-fable-5": "",
 	}
 	for name, want := range cases {
 		in := &statuslineInput{}

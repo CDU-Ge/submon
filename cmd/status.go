@@ -96,7 +96,7 @@ var statusCmd = &cobra.Command{
 			if i > 0 {
 				fmt.Fprintln(cmd.OutOrStdout())
 			}
-			renderStatus(cmd.OutOrStdout(), s, time.Now())
+			renderStatus(cmd.OutOrStdout(), s, time.Now(), cfg)
 		}
 		for _, e := range errs {
 			fmt.Fprintln(cmd.ErrOrStderr(), "warning:", e)

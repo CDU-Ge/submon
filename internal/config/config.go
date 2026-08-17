@@ -31,9 +31,9 @@ type Config struct {
 		// WarnBelowPct / CritBelowPct are *remaining* percentage thresholds.
 		WarnBelowPct float64 `toml:"warn_below_pct"`
 		CritBelowPct float64 `toml:"crit_below_pct"`
-		Gotify struct {
-			URL       string `toml:"url"`
-			AppToken  string `toml:"app_token"`
+		Gotify       struct {
+			URL      string `toml:"url"`
+			AppToken string `toml:"app_token"`
 			// Priority is the Gotify priority (1-10), default 5.
 			Priority int `toml:"priority"`
 		} `toml:"gotify"`

@@ -104,8 +104,8 @@ type remainsResponse struct {
 
 type modelRemains struct {
 	ModelName                       string   `json:"model_name"`
-	StartTime                       int64    `json:"start_time"`  // epoch ms
-	EndTime                         int64    `json:"end_time"`    // epoch ms
+	StartTime                       int64    `json:"start_time"` // epoch ms
+	EndTime                         int64    `json:"end_time"`   // epoch ms
 	CurrentIntervalTotalCount       int64    `json:"current_interval_total_count"`
 	CurrentIntervalRemainingPercent *float64 `json:"current_interval_remaining_percent"`
 	RemainsTime                     int64    `json:"remains_time"` // ms until 5h reset
