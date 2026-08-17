@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/ge/subscription-monitor/internal/secret"
@@ -28,20 +29,26 @@ type Config struct {
 		Path string `toml:"path"`
 	} `toml:"cache"`
 	Notify struct {
-		// WarnBelowPct / CritBelowPct are *remaining* percentage thresholds.
+		// WarnBelowPct / CritBelowPct 是剩余百分比阈值(用于状态栏染色)。
 		WarnBelowPct float64 `toml:"warn_below_pct"`
 		CritBelowPct float64 `toml:"crit_below_pct"`
-		Gotify       struct {
+		// RemindBefore: 窗口重置前多久开始"催用"提醒(如 "1h"、"30m"),0 = 关闭。
+		RemindBefore string `toml:"remind_before"`
+		// UseAbovePct: 窗口将重置时,剩余 ≥ 此百分比才提醒"抓紧用"
+		// (剩余很少 = 已用够本,不打扰)。
+		UseAbovePct float64 `toml:"use_above_pct"`
+		Gotify      struct {
 			URL      string `toml:"url"`
 			AppToken string `toml:"app_token"`
-			// Priority is the Gotify priority (1-10), default 5.
+			// Priority 是 Gotify 优先级(1-10),默认 5。
 			Priority int `toml:"priority"`
 		} `toml:"gotify"`
 	} `toml:"notify"`
 	Statusline struct {
-		// DefaultProvider picks the provider when it can't be auto-detected
-		// ("zhipu" | "minimax").
+		// DefaultProvider: 无法自动识别时的默认 provider("zhipu"|"minimax")。
 		DefaultProvider string `toml:"default_provider"`
+		// Layout: 状态栏排版方案("a"|"b"|"c"),默认 "a"。详见 README。
+		Layout string `toml:"layout"`
 	} `toml:"statusline"`
 }
 
@@ -51,8 +58,23 @@ func Default() *Config {
 	c.Cache.TTLSeconds = 300
 	c.Notify.WarnBelowPct = 20
 	c.Notify.CritBelowPct = 5
+	c.Notify.RemindBefore = "1h"
+	c.Notify.UseAbovePct = 30
 	c.Notify.Gotify.Priority = 5
+	c.Statusline.Layout = "a"
 	return c
+}
+
+// RemindBeforeDuration 解析 remind_before 配置为时长;0 或非法值 = 关闭催用提醒。
+func (c *Config) RemindBeforeDuration() time.Duration {
+	if c.Notify.RemindBefore == "" {
+		return time.Hour
+	}
+	d, err := time.ParseDuration(c.Notify.RemindBefore)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
 }
 
 // Dir returns the config directory (~/.config/submon).
@@ -92,6 +114,19 @@ func Load() (*Config, error) {
 	}
 	if cfg.Notify.Gotify.Priority <= 0 {
 		cfg.Notify.Gotify.Priority = 5
+	}
+	if cfg.Notify.RemindBefore == "" {
+		cfg.Notify.RemindBefore = "1h"
+	}
+	if cfg.Notify.UseAbovePct <= 0 {
+		cfg.Notify.UseAbovePct = 30
+	}
+	if cfg.Statusline.Layout == "" {
+		cfg.Statusline.Layout = "a"
+	}
+	// 环境变量覆盖,便于临时切换方案预览:SUBMON_LAYOUT=a|b|c
+	if v := os.Getenv("SUBMON_LAYOUT"); v != "" {
+		cfg.Statusline.Layout = v
 	}
 	if cfg.Statusline.DefaultProvider == "" {
 		cfg.Statusline.DefaultProvider = os.Getenv("SUBMON_PROVIDER")

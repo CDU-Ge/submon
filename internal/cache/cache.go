@@ -27,10 +27,16 @@ type AlertState struct {
 
 // Entry is one provider's cached data.
 type Entry struct {
-	Snapshot   *model.Snapshot `json:"snapshot,omitempty"`
-	LastErr    string          `json:"last_error,omitempty"`
-	FetchedAt  time.Time       `json:"fetched_at"`
-	AlertState AlertState      `json:"alert_state"`
+	Snapshot *model.Snapshot `json:"snapshot,omitempty"`
+	LastErr  string          `json:"last_error,omitempty"`
+	// FetchedAt is when the snapshot data was fetched.
+	FetchedAt time.Time `json:"fetched_at"`
+	// RefreshedAt is when a refresh was last *attempted* (success or not).
+	// statusline's self-heal uses this to avoid hammering the API when it
+	// keeps failing (e.g. system just woke up, network down): it retries at
+	// most once per TTL/2.
+	RefreshedAt time.Time  `json:"refreshed_at,omitempty"`
+	AlertState  AlertState `json:"alert_state"`
 }
 
 type File struct {

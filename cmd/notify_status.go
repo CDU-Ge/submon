@@ -12,13 +12,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// notifyStatusCmd 展示告警状态机的当前状态,回答"什么时候会通知我":
-//   - 每个 provider 的当前级别(ok/warn/crit)与最低剩余百分比
-//   - 距离下一个阈值还差多少
-//   - watch 何时会再运行(systemd timer 下次触发时间)
+// notifyStatusCmd 展示催用提醒状态机的当前状态,回答"什么时候会通知我":
+//   - 各窗口距离重置还有多久、剩余多少
+//   - 进入"催用提醒窗口"(remind_before 内 + 剩余 ≥ use_above)的预计时间
+//   - watch 何时会再运行
 var notifyStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "查看告警状态与下次评估时间",
+	Short: "查看催用提醒状态与下次评估时间",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := loadDecryptedConfig()
 		if err != nil {
@@ -34,9 +34,16 @@ var notifyStatusCmd = &cobra.Command{
 			return err
 		}
 
-		warnAt, critAt := cfg.Notify.WarnBelowPct, cfg.Notify.CritBelowPct
-		fmt.Fprintf(out, "阈值: 剩余 <%.0f%% → 预警(warn), <%.0f%% → 严重(crit)\n", warnAt, critAt)
-		fmt.Fprintf(out, "规则: 仅 watch 运行时评估;状态发生变化才推送,持平不推送\n\n")
+		remind := cfg.RemindBeforeDuration()
+		useAbove := cfg.Notify.UseAbovePct
+		if remind == 0 {
+			fmt.Fprintln(out, "催用提醒已关闭(notify.remind_before = 0)")
+		} else {
+			fmt.Fprintf(out, "规则: 窗口将在 %s 内重置 且 剩余 ≥ %.0f%% → 推送「抓紧使用」\n",
+				humanDuration(remind), useAbove)
+			fmt.Fprintln(out, "      (剩余很少 = 已用够本,不打扰;窗口重置后回到静默)")
+			fmt.Fprintln(out)
+		}
 
 		any := false
 		for _, name := range []model.Provider{model.ProviderZhipu, model.ProviderMinimax} {
@@ -45,28 +52,32 @@ var notifyStatusCmd = &cobra.Command{
 				continue
 			}
 			any = true
-			level := e.AlertState.Level
-			if level == "" {
-				level = "ok"
-			}
-			lowest := e.Snapshot.CriticalPct()
-			pctStr, nextStr := "n/a", ""
-			if lowest != nil {
-				pctStr = fmt.Sprintf("%.0f%%", *lowest)
-				switch {
-				case *lowest < critAt:
-					nextStr = "已低于严重阈值,回升后将推送「已恢复」"
-				case *lowest < warnAt:
-					nextStr = fmt.Sprintf("再降 %.0f%% 到严重阈值(<%.0f%%)", *lowest-critAt, critAt)
-				default:
-					nextStr = fmt.Sprintf("再降 %.0f%% 到预警阈值(<%.0f%%)", *lowest-warnAt, warnAt)
+			fmt.Fprintf(out, "%s:\n", strings.ToUpper(string(name)))
+			for _, w := range []*model.Window{e.Snapshot.ShortWindow, e.Snapshot.LongWindow} {
+				if w == nil || w.ResetAt == nil {
+					continue
 				}
+				until := time.Until(*w.ResetAt)
+				mark := " "
+				note := ""
+				if w.RemainingPct != nil {
+					if until <= remind && *w.RemainingPct >= useAbove {
+						mark, note = "⚠", " ← 在提醒窗口内,下次 watch 将推送"
+					} else if until <= remind {
+						mark, note = "·", " (剩余不多,不催)"
+					} else if remind > 0 {
+						note = fmt.Sprintf("(距提醒窗口还有 %s)", humanDuration(until-remind))
+					}
+				}
+				pct := "n/a"
+				if w.RemainingPct != nil {
+					pct = fmt.Sprintf("%.0f%%", *w.RemainingPct)
+				}
+				fmt.Fprintf(out, "%s  %s窗口: 剩余 %s · %s 后重置%s\n",
+					mark, windowLabel(w.Label), pct, humanDuration(until), note)
 			}
-			icon := map[string]string{"ok": "✓", "warn": "⚠", "crit": "✗"}[level]
-			fmt.Fprintf(out, "%s %s: 级别 %s · 最低剩余 %s · %s\n",
-				icon, strings.ToUpper(string(name)), level, pctStr, nextStr)
 			if e.AlertState.LastMessage != "" {
-				fmt.Fprintf(out, "  最后一次推送: %s\n", strings.TrimSpace(e.AlertState.LastMessage))
+				fmt.Fprintf(out, "  最后推送: %s\n", firstLine(e.AlertState.LastMessage))
 			}
 		}
 		if !any {
@@ -126,4 +137,12 @@ var notifyArmCmd = &cobra.Command{
 
 func init() {
 	notifyCmd.AddCommand(notifyStatusCmd, notifyArmCmd, notifyTestCmd)
+}
+
+// firstLine 截取首行(LastMessage 是多行正文)。
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }

@@ -25,16 +25,28 @@ ttl_seconds = 300
 # path = "/home/you/.cache/submon/cache.json"
 
 [notify]
-# Alert thresholds on *remaining* percentage (the lowest window wins).
+# 状态栏染色阈值(剩余百分比):低于 warn 变黄、低于 crit 变红。
 warn_below_pct = 20.0
 crit_below_pct = 5.0
 
+# 催用提醒:窗口将在该时长内重置、且剩余 ≥ use_above_pct 时,
+# 推送「配额即将重置,抓紧使用」。设为 0 关闭。
+# 例:"1h" = 重置前 1 小时提醒;"30m" = 前 30 分钟。
+remind_before = "1h"
+# 剩余低于此百分比则认为"已用够本",重置时不打扰。
+use_above_pct = 30.0
+
 [notify.gotify]
 url = "https://gotify.example.com"
-app_token = "Axxxxxxxxxxxx"
-# 1-10, default 5.
+app_token = "Axxxxxxxxxxxx"  # 建议用 `submon token set gotify.app_token` 加密存储
+# 1-10,默认 5。
 priority = 5
 
 [statusline]
-# Fallback provider when ANTHROPIC_BASE_URL can't be detected: "zhipu" | "minimax".
+# ANTHROPIC_BASE_URL 无法识别时的默认 provider:"zhipu" | "minimax"。
 default_provider = "zhipu"
+# 排版方案:a|b|c,详见 README。也可用环境变量 SUBMON_LAYOUT 临时切换。
+#   a = ➜ dir git:(main)✗ Model [ctx] 5h 72% left·1h9m weekly 74% left (↻2m)
+#   b = Model · ctx 15% used · dir · ⎇main · 5h 72% left (1h9m) · weekly 74% left (5d10h)
+#   c = dir main · 15% · 72%/74% (↻2m)
+layout = "a"
