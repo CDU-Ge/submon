@@ -32,15 +32,17 @@ type Config struct {
 		// WarnBelowPct / CritBelowPct 是剩余百分比阈值(用于状态栏染色)。
 		WarnBelowPct float64 `toml:"warn_below_pct"`
 		CritBelowPct float64 `toml:"crit_below_pct"`
-		// RemindBefore: 窗口重置前多久开始"催用"提醒(如 "1h"、"30m"),0 = 关闭。
+		// RemindBefore: 窗口重置前多久开始评估"催用"提醒(如 "1h"、"30m"),0 = 关闭。
 		RemindBefore string `toml:"remind_before"`
-		// UseAbovePct: 窗口将重置时,剩余 ≥ 此百分比才提醒"抓紧用"
-		// (剩余很少 = 已用够本,不打扰)。
-		UseAbovePct float64 `toml:"use_above_pct"`
-		Gotify      struct {
+		// WasteNotifyPct: 按当前使用速率预测,重置时预计剩余(浪费)≥ 此值
+		// → 普通提醒(🔴 之外的常规推送)。
+		WasteNotifyPct float64 `toml:"waste_notify_pct"`
+		// WasteUrgentPct: 预计浪费 ≥ 此值 → 紧急提醒(高优先级推送 + 🔴 标题)。
+		WasteUrgentPct float64 `toml:"waste_urgent_pct"`
+		Gotify         struct {
 			URL      string `toml:"url"`
 			AppToken string `toml:"app_token"`
-			// Priority 是 Gotify 优先级(1-10),默认 5。
+			// Priority 是 Gotify 优先级(1-10),默认 5;紧急提醒自动 +3(上限 10)。
 			Priority int `toml:"priority"`
 		} `toml:"gotify"`
 	} `toml:"notify"`
@@ -59,7 +61,9 @@ func Default() *Config {
 	c.Notify.WarnBelowPct = 20
 	c.Notify.CritBelowPct = 5
 	c.Notify.RemindBefore = "1h"
-	c.Notify.UseAbovePct = 30
+	// 预计浪费 ≥30% 普通提醒,≥60% 紧急提醒。
+	c.Notify.WasteNotifyPct = 30
+	c.Notify.WasteUrgentPct = 60
 	c.Notify.Gotify.Priority = 5
 	c.Statusline.Layout = "a"
 	return c
@@ -118,8 +122,11 @@ func Load() (*Config, error) {
 	if cfg.Notify.RemindBefore == "" {
 		cfg.Notify.RemindBefore = "1h"
 	}
-	if cfg.Notify.UseAbovePct <= 0 {
-		cfg.Notify.UseAbovePct = 30
+	if cfg.Notify.WasteNotifyPct <= 0 {
+		cfg.Notify.WasteNotifyPct = 30
+	}
+	if cfg.Notify.WasteUrgentPct <= 0 {
+		cfg.Notify.WasteUrgentPct = 60
 	}
 	if cfg.Statusline.Layout == "" {
 		cfg.Statusline.Layout = "a"

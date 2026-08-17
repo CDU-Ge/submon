@@ -187,6 +187,20 @@ func (z *Zhipu) parseLimit(l quotaLimit) (*model.Window, string, error) {
 	if l.NextResetTime != nil {
 		t := time.UnixMilli(*l.NextResetTime)
 		w.ResetAt = &t
+		// 反推窗口起点:5h 窗口长 5h,weekly 长 7d,monthly 长 30d。
+		var length time.Duration
+		switch kind {
+		case "short":
+			length = 5 * time.Hour
+		case "long":
+			length = 7 * 24 * time.Hour
+		case "monthly_tool":
+			length = 30 * 24 * time.Hour
+		}
+		if length > 0 {
+			st := t.Add(-length)
+			w.StartedAt = &st
+		}
 	}
 	if kind == "monthly_tool" {
 		// TIME_LIMIT reports absolute counts.

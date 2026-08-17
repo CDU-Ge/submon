@@ -26,8 +26,40 @@ type Window struct {
 	TotalCount     *int64 `json:"total_count,omitempty"`
 	// ResetAt is when the window rolls over. Nil when unknown.
 	ResetAt *time.Time `json:"reset_at,omitempty"`
+	// StartedAt is when the window began. Nil when unknown; filled by
+	// providers that know the window length (MiniMax) or reset time only
+	// (Zhipu: derived as reset − 5h/7d once, at fetch time).
+	StartedAt *time.Time `json:"started_at,omitempty"`
 	// Label is a human description, e.g. "5h", "week", "month".
 	Label string `json:"label"`
+}
+
+// PredictedWastePct 按当前使用速率外推:重置时预计剩余(将被浪费)的百分比。
+//
+//	rate = UsedPct / elapsed;projected = rate × until
+//	waste = RemainingPct − projected(截断到 [0,100])
+//
+// 返回 nil 表示无法预测:缺字段、窗口刚开始(<5min,速率噪声大)、
+// 尚无使用(UsedPct=0,无从外推——这是"零使用"极端值,由调用方单独处理)。
+func (w *Window) PredictedWastePct(now time.Time) *float64 {
+	if w == nil || w.RemainingPct == nil || w.UsedPct == nil ||
+		w.ResetAt == nil || w.StartedAt == nil {
+		return nil
+	}
+	elapsed := now.Sub(*w.StartedAt)
+	until := w.ResetAt.Sub(now)
+	if elapsed <= 5*time.Minute || until <= 0 || *w.UsedPct <= 0 {
+		return nil
+	}
+	projectedUse := *w.UsedPct * float64(until) / float64(elapsed)
+	waste := *w.RemainingPct - projectedUse
+	if waste < 0 {
+		waste = 0
+	}
+	if waste > 100 {
+		waste = 100
+	}
+	return &waste
 }
 
 // Snapshot is the normalized state of one provider at a point in time.

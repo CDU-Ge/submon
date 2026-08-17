@@ -35,13 +35,14 @@ var notifyStatusCmd = &cobra.Command{
 		}
 
 		remind := cfg.RemindBeforeDuration()
-		useAbove := cfg.Notify.UseAbovePct
+		now := time.Now()
 		if remind == 0 {
 			fmt.Fprintln(out, "催用提醒已关闭(notify.remind_before = 0)")
 		} else {
-			fmt.Fprintf(out, "规则: 窗口将在 %s 内重置 且 剩余 ≥ %.0f%% → 推送「抓紧使用」\n",
-				humanDuration(remind), useAbove)
-			fmt.Fprintln(out, "      (剩余很少 = 已用够本,不打扰;窗口重置后回到静默)")
+			fmt.Fprintf(out, "规则: 窗口将在 %s 内重置时,按使用速率预测重置时的剩余(浪费):\n", humanDuration(remind))
+			fmt.Fprintf(out, "      预计浪费 ≥ %.0f%% → 普通提醒;≥ %.0f%% → 🔴紧急(高优先级);完全未使用 → 普通提醒\n",
+				cfg.Notify.WasteNotifyPct, cfg.Notify.WasteUrgentPct)
+			fmt.Fprintln(out, "      (预测会用完/浪费很少 = 不打扰;状态变化才推送)")
 			fmt.Fprintln(out)
 		}
 
@@ -58,20 +59,33 @@ var notifyStatusCmd = &cobra.Command{
 					continue
 				}
 				until := time.Until(*w.ResetAt)
-				mark := " "
-				note := ""
-				if w.RemainingPct != nil {
-					if until <= remind && *w.RemainingPct >= useAbove {
-						mark, note = "⚠", " ← 在提醒窗口内,下次 watch 将推送"
-					} else if until <= remind {
-						mark, note = "·", " (剩余不多,不催)"
-					} else if remind > 0 {
-						note = fmt.Sprintf("(距提醒窗口还有 %s)", humanDuration(until-remind))
-					}
-				}
 				pct := "n/a"
 				if w.RemainingPct != nil {
 					pct = fmt.Sprintf("%.0f%%", *w.RemainingPct)
+				}
+				// 预测行:进入提醒窗口后展示预计浪费与级别。
+				note := ""
+				mark := " "
+				if w.RemainingPct != nil && remind > 0 && until <= remind {
+					switch {
+					case w.UsedPct != nil && *w.UsedPct <= 0:
+						mark, note = "⚠", " ← 完全未使用,下次 watch 将提醒"
+					default:
+						if wp := w.PredictedWastePct(now); wp != nil {
+							switch {
+							case *wp >= cfg.Notify.WasteUrgentPct:
+								mark, note = "🔴", fmt.Sprintf(" ← 预计浪费 %.0f%%,下次 watch 将紧急推送", *wp)
+							case *wp >= cfg.Notify.WasteNotifyPct:
+								mark, note = "⚠", fmt.Sprintf(" ← 预计浪费 %.0f%%,下次 watch 将提醒", *wp)
+							default:
+								mark, note = "·", fmt.Sprintf(" (预计浪费 %.0f%%,用得差不多,不打扰)", *wp)
+							}
+						} else {
+							mark, note = "·", " (窗口初期,暂无法预测)"
+						}
+					}
+				} else if remind > 0 {
+					note = fmt.Sprintf("(距提醒窗口还有 %s)", humanDuration(until-remind))
 				}
 				fmt.Fprintf(out, "%s  %s窗口: 剩余 %s · %s 后重置%s\n",
 					mark, windowLabel(w.Label), pct, humanDuration(until), note)

@@ -111,6 +111,7 @@ type modelRemains struct {
 	RemainsTime                     int64    `json:"remains_time"` // ms until 5h reset
 	CurrentWeeklyTotalCount         int64    `json:"current_weekly_total_count"`
 	CurrentWeeklyRemainingPercent   *float64 `json:"current_weekly_remaining_percent"`
+	WeeklyStartTime                 int64    `json:"weekly_start_time"`   // epoch ms
 	WeeklyRemainsTime               int64    `json:"weekly_remains_time"` // ms until weekly reset
 }
 
@@ -158,6 +159,11 @@ func (m *MiniMax) Fetch(ctx context.Context) (*model.Snapshot, error) {
 		if first.RemainsTime > 0 {
 			t := now.Add(time.Duration(first.RemainsTime) * time.Millisecond)
 			w.ResetAt = &t
+			// start_time 即窗口起点(epoch ms)。
+			if first.StartTime > 0 {
+				st := time.UnixMilli(first.StartTime)
+				w.StartedAt = &st
+			}
 		}
 		snap.ShortWindow = w
 	}
@@ -180,6 +186,10 @@ func (m *MiniMax) Fetch(ctx context.Context) (*model.Snapshot, error) {
 		if first.WeeklyRemainsTime > 0 {
 			t := now.Add(time.Duration(first.WeeklyRemainsTime) * time.Millisecond)
 			w.ResetAt = &t
+			if first.WeeklyStartTime > 0 {
+				st := time.UnixMilli(first.WeeklyStartTime)
+				w.StartedAt = &st
+			}
 		}
 		snap.LongWindow = w
 	}
