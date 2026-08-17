@@ -16,8 +16,7 @@ type Config struct {
 		Token   string `toml:"token"`
 	} `toml:"zhipu"`
 	MiniMax struct {
-		Token      string `toml:"token"`
-		ConfigPath string `toml:"config_path"`
+		Token string `toml:"token"`
 	} `toml:"minimax"`
 	Cache struct {
 		// TTLSeconds is how long a fetched snapshot is served from cache.

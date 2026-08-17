@@ -13,9 +13,10 @@ base_url = "https://open.bigmodel.cn/api/anthropic"
 # token = "sk-..."
 
 [minimax]
-# Defaults to ~/.minimax-config.json when unset.
+# Also readable from the MINIMAX_TOKEN environment variable.
+# `submon generate config` migrates this from ~/.minimax-config.json if that
+# file exists.
 # token = "eyJ..."
-# config_path = "/home/you/.minimax-config.json"
 
 [cache]
 # Seconds a snapshot stays fresh. statusline reads the cache only; a systemd

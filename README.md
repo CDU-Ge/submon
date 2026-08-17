@@ -31,17 +31,23 @@ Serves cached data within the TTL (default 5 min); beyond it, refetches.
 
 ### `submon statusline`
 
-One compact line for Claude Code's statusline (or any terminal). Reads the
-**cache only** — never the network — so it always returns instantly and
-survives API outages by showing stale data.
+One robbyrussell-style line for Claude Code's statusline, combining the
+workspace dir, git branch/dirty marker, model, context window and subscription
+quotas. Reads the **cache only** — never the network — so it always returns
+instantly and survives API outages by showing stale data.
 
 ```
-⚡5h 97%·4h22m │ W 80%·5d13h
+➜ subscription-monitor git:(main)✗ GLM-5.3 [12.3k/200k 6%] │ ⚡ZHIPU 5h left 97%·4h22m │ W left 80%·5d13h (↻2m)
 ```
 
-Provider selection order: `--provider` flag → `ANTHROPIC_BASE_URL` domain
-detection (`bigmodel.cn`/`z.ai` → zhipu, `minimax` → minimax) →
-`statusline.default_provider` in config.
+- The quota segment is prefixed with the provider (`ZHIPU` / `MINIMAX`) so
+  subscriptions are distinguishable at a glance.
+- Percentages are marked `left` (remaining); the reset countdown follows (`·`).
+- Freshness trailer: `(↻2m)` counts down to the next cache refresh while data
+  is fresh; `(age 36m)` (yellow) flags data older than the TTL.
+- Provider selection order: `--provider` flag → `ANTHROPIC_BASE_URL` domain
+  detection (`bigmodel.cn`/`z.ai` → zhipu, `minimax` → minimax) →
+  `statusline.default_provider` in config.
 
 Claude Code `~/.claude/settings.json` snippet:
 
@@ -53,7 +59,6 @@ Claude Code `~/.claude/settings.json` snippet:
     "padding": 0
   }
 }
-```
 
 ### `submon watch`
 
@@ -74,6 +79,19 @@ systemctl --user daemon-reload
 systemctl --user enable --now submon-watch.timer
 ```
 
+### `submon generate config`
+
+Merge-generate `~/.config/submon/config.toml` against the current schema:
+existing values are preserved, new fields are filled with defaults, and a
+MiniMax token is migrated from `~/.minimax-config.json` when present (that
+file can then be deleted). Dry-run with a masked diff by default;
+`--write` applies.
+
+```sh
+submon generate config          # preview diff (tokens masked)
+submon generate config --write  # apply
+```
+
 ### `submon notify --test`
 
 Send a test Gotify push to verify connectivity.
@@ -87,10 +105,10 @@ Dump / delete the cache file (`~/.cache/submon/cache.json`).
 `~/.config/submon/config.toml` — see [`submon.example.toml`](submon.example.toml).
 Credentials resolve in this order:
 
-| provider | config | environment | fallback |
-|---|---|---|---|
-| zhipu | `[zhipu] token/base_url` | `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL` | — |
-| minimax | `[minimax] token` | — | `~/.minimax-config.json` |
+| provider | config | environment |
+|---|---|---|
+| zhipu | `[zhipu] token/base_url` | `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL` |
+| minimax | `[minimax] token` | `MINIMAX_TOKEN` |
 
 ## Notes on API semantics
 

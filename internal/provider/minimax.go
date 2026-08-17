@@ -13,8 +13,7 @@ import (
 	"github.com/ge/subscription-monitor/internal/model"
 )
 
-// MiniMax queries the MiniMax coding-plan remains API, keeping compatibility
-// with the existing ~/.minimax-config.json credentials file.
+// MiniMax queries the MiniMax coding-plan remains API.
 //
 // GET https://www.minimaxi.com/v1/api/openplatform/coding_plan/remains
 // (Bearer token). Payload shape (per model_remains[i]):
@@ -23,6 +22,10 @@ import (
 //	current_weekly_total_count    / current_weekly_remaining_percent    / weekly_remains_time
 //	start_time / end_time / model_name
 //
+// Credentials come from config ([minimax] token) or MINIMAX_TOKEN env; the
+// legacy ~/.minimax-config.json file is only read once by
+// `submon generate config` to migrate the token.
+//
 // MiniMax's remaining_percent is literally "remaining %" (unlike Zhipu's used
 // percentage), so it maps directly. remains_time / weekly_remains_time are
 // durations in milliseconds until the window resets.
@@ -30,10 +33,8 @@ import (
 // Subscription expiry comes from the combo/package endpoint; failure there is
 // non-fatal (the upstream CLI also treats it as optional).
 type MiniMax struct {
-	// Token is the Bearer credential. When empty, read from ConfigPath.
+	// Token is the Bearer credential. When empty, MINIMAX_TOKEN env is tried.
 	Token string
-	// ConfigPath defaults to ~/.minimax-config.json.
-	ConfigPath string
 	// BaseURL overrides the API origin (tests).
 	BaseURL string
 	// Client overrides the HTTP client (tests).
@@ -61,30 +62,34 @@ type minimaxConfig struct {
 	GroupID string `json:"groupId"`
 }
 
+// ReadLegacyMinimaxToken extracts the token from ~/.minimax-config.json.
+// Used by `submon generate config` to migrate credentials; empty when the
+// file is missing or has no token.
+func ReadLegacyMinimaxToken() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	path := filepath.Join(home, ".minimax-config.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var cfg minimaxConfig
+	if json.Unmarshal(data, &cfg) != nil {
+		return ""
+	}
+	return cfg.Token
+}
+
 func (m *MiniMax) resolveToken() (string, error) {
 	if m.Token != "" {
 		return m.Token, nil
 	}
-	path := m.ConfigPath
-	if path == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		path = filepath.Join(home, ".minimax-config.json")
+	if v := os.Getenv("MINIMAX_TOKEN"); v != "" {
+		return v, nil
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", &ErrNotConfigured{Reason: fmt.Sprintf("no MiniMax token: set minimax.token in config or create %s", path)}
-	}
-	var cfg minimaxConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return "", &ErrNotConfigured{Reason: fmt.Sprintf("parse %s: %v", path, err)}
-	}
-	if cfg.Token == "" {
-		return "", &ErrNotConfigured{Reason: fmt.Sprintf("no token field in %s", path)}
-	}
-	return cfg.Token, nil
+	return "", &ErrNotConfigured{Reason: "no MiniMax token: set [minimax] token in config.toml or MINIMAX_TOKEN"}
 }
 
 // remainsResponse: fields live at the top level (no data wrapper);

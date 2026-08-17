@@ -38,7 +38,7 @@ func Build(name model.Provider, cfg *config.Config) (Source, error) {
 		z.BaseURL = originOf(z.BaseURL)
 		return z, nil
 	case model.ProviderMinimax:
-		return &MiniMax{Token: cfg.MiniMax.Token, ConfigPath: cfg.MiniMax.ConfigPath}, nil
+		return &MiniMax{Token: cfg.MiniMax.Token}, nil
 	}
 	return nil, &ErrNotConfigured{Reason: "unknown provider: " + string(name)}
 }

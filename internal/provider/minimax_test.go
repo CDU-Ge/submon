@@ -63,7 +63,8 @@ func TestMinimaxFetchParsesTopLevelModelRemains(t *testing.T) {
 }
 
 func TestMinimaxNotConfigured(t *testing.T) {
-	m := &MiniMax{Token: "", ConfigPath: "/nonexistent/minimax-config.json"}
+	t.Setenv("MINIMAX_TOKEN", "")
+	m := &MiniMax{Token: ""}
 	if _, err := m.Fetch(context.Background()); err == nil {
 		t.Fatal("expected ErrNotConfigured")
 	}
