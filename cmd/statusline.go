@@ -290,10 +290,10 @@ func termColumns() int {
 // renderLayoutA 是默认排版:左稳定(目录+分支)→ 模型+effort → fast → ctx
 // (max+bar+%)→ 配额。
 //
-//	submon main  GLM-5.3 xhigh  fast  200k [▍░░░░░░░] 6%  MINIMAX 3h11m 97% - weekly 99% 5d3h (↻3m)
+//	submon main GLM-5.3 xhigh fast 200k [▍       ] 6% MINIMAX 3h5m 97% - weekly 99% 5d3h (↻1m)
 //
 // 设计原则:
-//   - 段间双空格分隔(朴素、不抢色)
+//   - 段间单空格分隔(视觉整齐)
 //   - effort 紧贴模型(模型属性);fast 单独成段(运行开关,语义不同)
 //   - 视觉锚点居中:ctx(max + 进度条 + %)是用户最关心的信息
 //   - 减特殊符号:无 ➜、⚡、⎇、✗;只保留 *(脏,git status 通用)和 ↻(新鲜度)
@@ -343,8 +343,8 @@ func renderLayoutA(in *statuslineInput, cfg *config.Config, modelName, dir, cwd 
 		segs = append(segs, q)
 	}
 
-	// 双空格分隔:朴素,不让分隔符抢色。
-	return strings.Join(segs, "  ")
+	// 单空格分隔:视觉整齐,不让分隔符抢色。
+	return strings.Join(segs, " ")
 }
 
 // effortLabel 返回 effort 档位文本(magenta);空字符串=不显示。
