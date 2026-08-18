@@ -329,14 +329,38 @@ func sessionMark(in *statuslineInput) string {
 }
 
 // quotaSegmentFor 选择配额段来源:官方模式且 stdin 带 rate_limits 时,
-// 直接用官方数据(零 API、零缓存);否则回落到订阅 provider 缓存。
+// 直接用官方数据(零 API、零缓存);否则回落到订阅 provider 缓存;
+// 缓存里哪个 provider 有数据就用哪个(未配置 default_provider 时)。
 func quotaSegmentFor(in *statuslineInput, cfg *config.Config, now time.Time) string {
 	if isOfficialClaude() {
 		if q := claudeQuotaSegment(in, now); q != "" {
 			return q
 		}
 	}
-	return quotaSegment(cfg, in.modelProvider(), now)
+	if q := quotaSegment(cfg, in.modelProvider(), now); q != "" {
+		return q
+	}
+	// 无显式选择时,取缓存里最近有数据的 provider。
+	if path, err := cfg.CachePath(); err == nil {
+		if file, err := cache.New(path).Load(); err == nil {
+			var best *cache.Entry
+			var bestName model.Provider
+			for _, name := range model.AllProviders() {
+				e := file.Get(name)
+				if e == nil || e.Snapshot == nil {
+					continue
+				}
+				if best == nil || e.FetchedAt.After(best.FetchedAt) {
+					best = e
+					bestName = name
+				}
+			}
+			if best != nil {
+				return quotaSegmentForProvider(cfg, bestName, now)
+			}
+		}
+	}
+	return ""
 }
 
 // claudeQuotaSegment 从 stdin 的 rate_limits 渲染官方订阅限额段。
@@ -496,7 +520,10 @@ func gitDirty(cwd string) (bool, error) {
 	return false, err
 }
 
-// contextSegment 渲染 "[12.3k/200k 6%]"。
+// contextSegment 渲染 "[▂▄▆██░ 12.3k/200k 6%]"。
+//
+// 进度条 = 上下文已用%(与官方示例的 ▓/░ 风格一致,但用八分块字符
+// 提高精度);数值段保持 used/total pct%。
 //
 // 两个 Claude Code 环境变量会修正"实际上下文上限":
 //   - CLAUDE_CODE_MAX_CONTEXT_TOKENS: 覆盖 Claude Code 对当前模型上下文
@@ -505,8 +532,6 @@ func gitDirty(cwd string) (bool, error) {
 //     (100K–1M,例如 500000 = 对话到 500K 时压缩)
 //
 // 有效上限 = min(AUTO_COMPACT_WINDOW, 实际窗口, MAX_CONTEXT_TOKENS)。
-// 展示形态不做特殊化:统一 "[used/total pct%]",total 显示有效上限
-// (理论上它就是当前实际可用的最大上下文),百分比基于它计算。
 func contextSegment(cw contextWindowInfo) string {
 	if cw.TotalInputTokens == nil || cw.ContextWindowSize == nil || *cw.ContextWindowSize <= 0 {
 		return ""
@@ -523,8 +548,10 @@ func contextSegment(cw contextWindowInfo) string {
 	}
 
 	pct := float64(*cw.TotalInputTokens) / float64(effective) * 100
-	return ansiWhite + "[" + ansiReset + used + "/" + humanTokens(float64(effective)) + " " +
-		ctxUsedColor(pct) + fmt.Sprintf("%.0f%%", pct) + ansiReset + ansiWhite + "]" + ansiReset
+	color := ctxUsedColor(pct)
+	bar := color + miniBar(pct, 5) + ansiReset
+	return ansiWhite + "[" + ansiReset + bar + " " + used + "/" + humanTokens(float64(effective)) + " " +
+		color + fmt.Sprintf("%.0f%%", pct) + ansiReset + ansiWhite + "]" + ansiReset
 }
 
 // humanTokens 把 token 数格式化为紧凑形式:1.2M / 183.4k / 890。
@@ -561,10 +588,20 @@ func envInt64(key string) int64 {
 // 缓存过期时触发自愈:fork 一个后台静默 watch 刷新(不阻塞本次渲染),
 // 受 RefreshedAt 节流,失败也不会打爆 API。
 func quotaSegment(cfg *config.Config, modelProv model.Provider, now time.Time) string {
+	statuslineModelProvider = modelProv
 	name, err := resolveStatuslineProvider(cfg)
 	if err != nil {
 		return "" // quotas are an optional segment; never break the line
 	}
+	return quotaSegmentForProvider(cfg, name, now)
+}
+
+// statuslineModelProvider 当前会话模型所属 provider(badge 省略判断用)。
+var statuslineModelProvider model.Provider
+
+// quotaSegmentForProvider 渲染指定 provider 的配额段(读缓存)。
+// badge 在"当前模型属于该 provider"时省略(信息冗余)。
+func quotaSegmentForProvider(cfg *config.Config, name model.Provider, now time.Time) string {
 	path, err := cfg.CachePath()
 	if err != nil {
 		return ""
@@ -600,7 +637,7 @@ func quotaSegment(cfg *config.Config, modelProv model.Provider, now time.Time) s
 		return ""
 	}
 	out := ""
-	if modelProv != name {
+	if statuslineModelProvider != name {
 		out = ansiWhite + "⚡" + ansiReset + providerBadge(s.Provider) + " "
 	}
 	// 窗口间分隔:与顶层段一致的 " - "。
