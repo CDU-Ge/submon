@@ -18,15 +18,21 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// statusline renders a robbyrussell-style line for Claude Code's statusLine
-// setting: dir + git branch/dirty + model + context window, extended with
-// subscription quotas. It is invoked on nearly every UI render, so it must:
+// statusline renders a single-line status bar for Claude Code's statusLine
+// setting, extended with subscription quotas. It is invoked on nearly every UI
+// render, so it must:
 //   - never touch the network for quotas (cache-only),
 //   - always print one line fast, even when data is stale or missing,
 //   - auto-pick the provider matching the session's ANTHROPIC_BASE_URL.
 //
-// Example output:
-// ➜ submon git:(main)✗ GLM-5.3 [12.3k/200k 6%] │ ⚡ZHIPU 5h left 97%·4h22m │ W left 80%·5d13h (age 2m)
+// Design (layout a, default):
+//
+//	submon ⎇main  GLM-5.3  ctx 12.3k/200k 6%  xhigh  fast  5h 4h50m 90%  weekly 53% 4d13h  ↻3m
+//
+// Layout principle: left = stable (dir, branch, model), center = the thing the
+// user watches every frame (context tokens), right = volatile (effort, fast,
+// rate-limit windows). Symbols are kept to a minimum: only ⎇ (git convention)
+// and * (dirty marker) survive.
 type contextWindowInfo struct {
 	TotalInputTokens  *int64 `json:"total_input_tokens"`
 	ContextWindowSize *int64 `json:"context_window_size"`
@@ -79,8 +85,8 @@ var statuslineProvider string
 var statuslineCmd = &cobra.Command{
 	Use:   "statusline",
 	Short: "Claude Code 状态栏(目录/git/模型/上下文 + 配额)",
-	Long: "输出 robbyrussell 风格的状态行:目录、git 分支、模型、上下文窗口用量\n" +
-		"与订阅配额(只读缓存,不联网)。\n" +
+	Long: "输出单行状态栏:左稳定(目录/git 分支/模型)→ 中关心(token 使用)\n" +
+		"→ 右变动(effort/fast/订阅配额)。只读缓存,不联网。\n" +
 		"provider 选择顺序: --provider > ANTHROPIC_BASE_URL 自动识别 > 配置默认值。",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
@@ -246,8 +252,9 @@ func freshTrailer(cfg *config.Config, now time.Time) string {
 // 极简排版,避免终端截断(Claude Code 在运行脚本前设置 COLUMNS/LINES)。
 //
 //	layout a(默认): ➜ dir git:(main)✗ Model [ctx] 2h50m 81% left weekly 69% left 5d6h (↻3m)
-//	layout b(信息优先): Model · ctx 15% used · dir · ⎇main · 5h 72% left (1h9m) · weekly 74% left (5d10h)
-//	layout c(极简):    dir main · 15% · 72%/74% (↻2m)
+//	layout a(默认,左稳定→中关心→右变动): submon ⎇main  GLM-5.3  ctx 12.3k/200k 6%  xhigh  fast  5h 4h50m 90%  weekly 53% 4d13h  ↻3m
+//	layout b(信息优先):                       Model · ctx 15% used · dir · ⎇main · 5h 72% left (1h9m) · weekly 74% left (5d10h)
+//	layout c(极简):                            dir main · 15% · 72%/74% (↻2m)
 func renderStatusline(in *statuslineInput, cfg *config.Config, now time.Time) string {
 	modelName := stripANSI(in.Model.Display)
 
@@ -280,52 +287,82 @@ func termColumns() int {
 	return 1 << 30
 }
 
-// renderLayoutA: robbyrussell 经典布局(当前默认)。
-// 顶层段之间统一用 " - " 分隔:➜ dir git:(main)✗ - Model [ctx] - 2h50m 81% left - weekly 69% left 5d6h (↻3m)
+// renderLayoutA 是默认排版:左稳定(目录+分支)→ 模型+effort → fast → ctx
+// (max+bar+%)→ 配额。
+//
+//	submon main  GLM-5.3 xhigh  fast  200k [▍░░░░░░░] 6%  MINIMAX 3h11m 97% - weekly 99% 5d3h (↻3m)
+//
+// 设计原则:
+//   - 段间双空格分隔(朴素、不抢色)
+//   - effort 紧贴模型(模型属性);fast 单独成段(运行开关,语义不同)
+//   - 视觉锚点居中:ctx(max + 进度条 + %)是用户最关心的信息
+//   - 减特殊符号:无 ➜、⚡、⎇、✗;只保留 *(脏,git status 通用)和 ↻(新鲜度)
 func renderLayoutA(in *statuslineInput, cfg *config.Config, modelName, dir, cwd string, now time.Time) string {
 	var segs []string
 
-	prompt := ansiGreen + "➜" + ansiReset + " " + ansiCyan + dir + ansiReset
-	if git := gitSegment(cwd); git != "" {
-		prompt += " " + git
-	}
-	segs = append(segs, prompt)
-
-	if modelName != "" {
-		seg := modelName
-		if mark := sessionMark(in); mark != "" {
-			seg += " " + mark
-		}
-		if ctx := contextSegment(in.ContextWindow); ctx != "" {
-			seg += " " + ctx
+	// 1. 左:目录 + 分支(纯文本,无 ⎇;颜色区分 dir/branch)。
+	if dir != "" {
+		seg := ansiCyan + dir + ansiReset
+		if branch, dirty := gitInlineSegment(cwd); branch != "" {
+			seg += " " + ansiMagenta + branch + ansiReset
+			if dirty {
+				seg += ansiYellow + "*" + ansiReset
+			}
 		}
 		segs = append(segs, seg)
-	} else if ctx := contextSegment(in.ContextWindow); ctx != "" {
+	}
+
+	// 2. 模型 + effort(紧贴,中间单空格)—— effort 是模型属性,不是会话开关。
+	var modelSeg string
+	if modelName != "" {
+		modelSeg = ansiCyan + modelName + ansiReset
+	}
+	if e := effortLabel(in); e != "" {
+		if modelSeg != "" {
+			modelSeg += " " + e
+		} else {
+			modelSeg = e
+		}
+	}
+	if modelSeg != "" {
+		segs = append(segs, modelSeg)
+	}
+
+	// 3. fast 模式(运行开关,单独成段;只在开启时显示)。
+	if f := fastLabel(in); f != "" {
+		segs = append(segs, f)
+	}
+
+	// 4. 中部锚点:token 使用进度(max + bar + %)。
+	if ctx := contextSegment(in.ContextWindow); ctx != "" {
 		segs = append(segs, ctx)
 	}
 
+	// 5. 最右:配额(变化最频繁)。
 	if q := quotaSegmentFor(in, cfg, now); q != "" {
 		segs = append(segs, q)
 	}
-	sep := ansiWhite + " - " + ansiReset
-	return strings.Join(segs, sep)
+
+	// 双空格分隔:朴素,不让分隔符抢色。
+	return strings.Join(segs, "  ")
 }
 
-// sessionMark 汇总会话开关:fast 模式 ⚡fast、effort 级别(仅非默认时)。
-// 这些信息只在这里出现,单行不占额外段。
-func sessionMark(in *statuslineInput) string {
-	var parts []string
-	if in.FastMode {
-		parts = append(parts, ansiYellow+"⚡fast"+ansiReset)
-	}
+// effortLabel 返回 effort 档位文本(magenta);空字符串=不显示。
+// 任何档位都可见 —— docs/statusline.md 明确该字段反映 mid-session 变化。
+func effortLabel(in *statuslineInput) string {
 	switch in.Effort.Level {
-	case "low", "xhigh", "max": // medium/high 是常规档,不标
-		parts = append(parts, ansiMagenta+in.Effort.Level+ansiReset)
+	case "low", "medium", "high", "xhigh", "max":
+		return ansiMagenta + in.Effort.Level + ansiReset
 	}
-	if len(parts) == 0 {
+	return ""
+}
+
+// fastLabel 返回 fast mode 文本(yellow,纯文本无 emoji);空=不显示。
+func fastLabel(in *statuslineInput) string {
+	if !in.FastMode {
 		return ""
 	}
-	return strings.Join(parts, " ")
+	return ansiYellow + "fast" + ansiReset
 }
 
 // quotaSegmentFor 选择配额段来源:官方模式且 stdin 带 rate_limits 时,
@@ -487,18 +524,15 @@ func ctxUsedColor(used float64) string {
 	return ansiGreen
 }
 
-// gitSegment renders "git:(branch)✗" in robbyrussell colors; empty outside repos.
-func gitSegment(cwd string) string {
-	branch, err := gitBranch(cwd)
-	if err != nil || branch == "" {
-		return ""
+// gitInlineSegment 返回分支名和脏标记。无 ⎇、git:() 等装饰字符
+// —— 全部由 renderLayoutA 用颜色区分。无 ANSI 包装,返回纯文本。
+func gitInlineSegment(cwd string) (branch string, dirty bool) {
+	b, err := gitBranch(cwd)
+	if err != nil || b == "" {
+		return "", false
 	}
-	dirty := ""
-	if d, err := gitDirty(cwd); err == nil && d {
-		dirty = " " + ansiYellow + "✗" + ansiReset
-	}
-	return ansiBlue + "git:(" + ansiReset + ansiBRed + branch + ansiReset + ansiBlue + ")" + ansiReset + dirty
-
+	d, _ := gitDirty(cwd)
+	return b, d
 }
 
 func gitBranch(cwd string) (string, error) {
@@ -520,10 +554,11 @@ func gitDirty(cwd string) (bool, error) {
 	return false, err
 }
 
-// contextSegment 渲染 "[▂▄▆██░ 12.3k/200k 6%]"。
+// contextSegment 渲染 "200k [▍░░░░░░░] 6%"。
 //
-// 进度条 = 上下文已用%(与官方示例的 ▓/░ 风格一致,但用八分块字符
-// 提高精度);数值段保持 used/total pct%。
+// 顺序:最大上下文 → 进度条 → 百分比(用户希望的排列)。最大上下文用
+// humanTokens 紧凑显示(200k / 1M);进度条 8 格宽度 + 8 分块字符(精度
+// 约 1.5%);百分比阈值染色,bar 用相同色。
 //
 // 两个 Claude Code 环境变量会修正"实际上下文上限":
 //   - CLAUDE_CODE_MAX_CONTEXT_TOKENS: 覆盖 Claude Code 对当前模型上下文
@@ -536,9 +571,7 @@ func contextSegment(cw contextWindowInfo) string {
 	if cw.TotalInputTokens == nil || cw.ContextWindowSize == nil || *cw.ContextWindowSize <= 0 {
 		return ""
 	}
-	used := humanTokens(float64(*cw.TotalInputTokens))
 	total := *cw.ContextWindowSize
-
 	effective := total
 	if v := envInt64("CLAUDE_CODE_MAX_CONTEXT_TOKENS"); v > 0 && v < effective {
 		effective = v
@@ -546,12 +579,45 @@ func contextSegment(cw contextWindowInfo) string {
 	if v := envInt64("CLAUDE_CODE_AUTO_COMPACT_WINDOW"); v > 0 && v < effective {
 		effective = v
 	}
-
 	pct := float64(*cw.TotalInputTokens) / float64(effective) * 100
 	color := ctxUsedColor(pct)
-	bar := color + miniBar(pct, 5) + ansiReset
-	return ansiWhite + "[" + ansiReset + bar + " " + used + "/" + humanTokens(float64(effective)) + " " +
-		color + fmt.Sprintf("%.0f%%", pct) + ansiReset + ansiWhite + "]" + ansiReset
+	bar := ctxBar(pct)
+	return color + humanTokens(float64(effective)) + ansiReset + " " +
+		color + "[" + bar + "]" + ansiReset + " " +
+		color + fmt.Sprintf("%.0f%%", pct) + ansiReset
+}
+
+// ctxBar 渲染 N 格宽度的进度条,使用 8 分块 unicode block 字符(精度
+// ≈ 1/(width*8))。pct 范围 [0,100],超界截断。
+//
+//	'▏▎▍▌▋▊▉█' 七个等级(1/8~8/8 已用),不足 1/8 用 ASCII 空格填充
+//	width=8 时:6% → "▍       ",50% → "████    ",75% → "██████  ",100% → "████████"
+func ctxBar(pct float64) string {
+	const width = 8
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	eighths := pct / 100 * float64(width) * 8
+	full := int(eighths / 8)
+	rem := int(eighths) % 8
+	// index 0 = 1/8 已用(index 0 留空,1/8 以下用空格填充)
+	halfBlocks := []rune{' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'}
+
+	var b strings.Builder
+	for i := 0; i < width; i++ {
+		r := rune(' ')
+		switch {
+		case i < full:
+			r = '█'
+		case i == full && rem > 0:
+			r = halfBlocks[rem]
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // humanTokens 把 token 数格式化为紧凑形式:1.2M / 183.4k / 890。
@@ -617,7 +683,7 @@ func quotaSegmentForProvider(cfg *config.Config, name model.Provider, now time.T
 		if entry != nil && entry.LastErr != "" {
 			hint = entry.LastErr
 		}
-		return ansiWhite + "⚡" + badgeText(name) + " " + hint + ansiReset
+		return ansiWhite + badgeText(name) + " " + hint + ansiReset
 	}
 	s := entry.Snapshot
 
@@ -638,7 +704,7 @@ func quotaSegmentForProvider(cfg *config.Config, name model.Provider, now time.T
 	}
 	out := ""
 	if statuslineModelProvider != name {
-		out = ansiWhite + "⚡" + ansiReset + providerBadge(s.Provider) + " "
+		out = providerBadge(s.Provider) + " "
 	}
 	// 窗口间分隔:与顶层段一致的 " - "。
 	out += strings.Join(parts, ansiWhite+" - "+ansiReset)
@@ -725,10 +791,11 @@ func resolveStatuslineProvider(cfg *config.Config) (model.Provider, error) {
 
 // colorizeWindow 渲染一个窗口段,两种形态:
 //
-//	short(5h):      "3h8m 86% left"        —— 倒计时打头(倒计时是主信息)
-//	long(weekly):   "weekly 70% left 5d7h" —— 标签打头,倒计时收尾
+//	short(5h):      "3h8m 86%"           —— 倒计时打头(紧迫感)
+//	long(weekly):   "weekly 70% 5d7h"    —— 标签打头,倒计时收尾
 //
-// 辅助文本(倒计时/标签/left)用正常前景色,百分比保持阈值变色。
+// 辅助文本(倒计时/标签)用正常前景色,百分比保持阈值变色;
+// 不再加 "left" 描述——百分比语义已自明(剩余%),加文字属于冗余字符。
 func colorizeWindow(prefix string, w *model.Window, now time.Time, cfg *config.Config) string {
 	if w.RemainingPct == nil && w.UsedPct == nil {
 		return prefix + " n/a"
@@ -739,15 +806,14 @@ func colorizeWindow(prefix string, w *model.Window, now time.Time, cfg *config.C
 		pctStr = fmt.Sprintf("%.0f%%", pct)
 		color = pctColor(pct, cfg)
 	}
-	left := ansiWhite + "left" + ansiReset
 
-	// 5h 窗口:倒计时在前(时间紧迫感),百分比在后。
+	// 5h 窗口:倒计时在前(紧迫感),百分比在后。
 	if w.Label == "5h" && w.ResetAt != nil {
 		return ansiWhite + humanDuration(time.Until(*w.ResetAt)) + ansiReset + " " +
-			color + pctStr + ansiReset + " " + left
+			color + pctStr + ansiReset
 	}
 	// weekly/其他:标签 + 百分比 + 倒计时收尾。
-	out := ansiWhite + prefix + ansiReset + " " + color + pctStr + ansiReset + " " + left
+	out := ansiWhite + prefix + ansiReset + " " + color + pctStr + ansiReset
 	if w.ResetAt != nil {
 		out += " " + ansiWhite + humanDuration(time.Until(*w.ResetAt)) + ansiReset
 	}
