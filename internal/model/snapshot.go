@@ -8,9 +8,25 @@ import "time"
 type Provider string
 
 const (
-	ProviderZhipu   Provider = "zhipu"
-	ProviderMinimax Provider = "minimax"
+	ProviderZhipu    Provider = "zhipu"
+	ProviderMinimax  Provider = "minimax"
+	ProviderOpenCode Provider = "opencode"
 )
+
+// AllProviders 列出全部已知 provider(展示顺序)。
+func AllProviders() []Provider {
+	return []Provider{ProviderZhipu, ProviderMinimax, ProviderOpenCode}
+}
+
+// ValidProvider 报告 p 是否为已知 provider。
+func ValidProvider(p Provider) bool {
+	for _, v := range AllProviders() {
+		if v == p {
+			return true
+		}
+	}
+	return false
+}
 
 // Window is a usage window normalized to "remaining" semantics across providers.
 // Both Zhipu and MiniMax expose a ~5h short window and a weekly long window.

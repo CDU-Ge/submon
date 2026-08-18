@@ -293,10 +293,13 @@ func windowDetail(snap *model.Snapshot, now time.Time) string {
 	return joinLines(lines)
 }
 
-// providerNick 中文 provider 名。
+// providerCN 中文 provider 名。
 func providerCN(name model.Provider) string {
 	if name == model.ProviderZhipu {
 		return "智谱"
+	}
+	if name == model.ProviderOpenCode {
+		return "OpenCode"
 	}
 	return "MiniMax"
 }

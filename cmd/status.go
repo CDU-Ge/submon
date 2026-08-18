@@ -21,15 +21,18 @@ var (
 var statusCmd = &cobra.Command{
 	Use:   "status [provider]",
 	Short: "查看订阅配额状态",
-	Long: "展示配额面板。默认展示全部 provider(zhipu + minimax):\n" +
+	Long: "展示配额面板。默认展示全部 provider:\n" +
 		"有凭据的展示数据,缺凭据的标注原因。\n\n" +
-		"provider: zhipu | minimax。省略则展示全部。\n" +
+		"provider: zhipu | minimax | opencode。省略则展示全部。\n" +
 		"缓存未过期时直接读缓存;--force 强制刷新并更新缓存。",
 	Args: cobra.MaximumNArgs(1),
-	ValidArgs: []string{
-		string(model.ProviderZhipu),
-		string(model.ProviderMinimax),
-	},
+	ValidArgs: func() []string {
+		var names []string
+		for _, p := range model.AllProviders() {
+			names = append(names, string(p))
+		}
+		return names
+	}(),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := loadDecryptedConfig()
 		if err != nil {
@@ -118,17 +121,17 @@ var statusCmd = &cobra.Command{
 	},
 }
 
-// targetProviders 解析目标 provider:显式参数 > 全部(zhipu + minimax)。
-// 现在总是返回全部 provider — 未配置的也会在输出中标注原因,不再静默跳过。
+// targetProviders 解析目标 provider:显式参数 > 全部。
+// 未配置的也会在输出中标注原因,不再静默跳过。
 func targetProviders(args []string, cfg *config.Config) ([]model.Provider, error) {
 	if len(args) == 1 {
 		name := model.Provider(args[0])
-		if name != model.ProviderZhipu && name != model.ProviderMinimax {
-			return nil, fmt.Errorf("未知 provider %q(zhipu|minimax)", args[0])
+		if !model.ValidProvider(name) {
+			return nil, fmt.Errorf("未知 provider %q(zhipu|minimax|opencode)", args[0])
 		}
 		return []model.Provider{name}, nil
 	}
-	return []model.Provider{model.ProviderZhipu, model.ProviderMinimax}, nil
+	return model.AllProviders(), nil
 }
 
 func init() {

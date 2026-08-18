@@ -1,9 +1,9 @@
 # subscription-monitor (submon)
 
-Monitors coding-plan quotas for **Zhipu** (open.bigmodel.cn / api.z.ai) and
-**MiniMax**, with a shared cache so high-frequency consumers (terminal
-statuslines) never hammer the APIs, plus Gotify push alerts on threshold
-crossings.
+Monitors coding-plan quotas for **Zhipu** (open.bigmodel.cn / api.z.ai),
+**MiniMax** and **OpenCode** (opencode.ai/zen), with a shared cache so
+high-frequency consumers (terminal statuslines) never hammer the APIs, plus
+Gotify push alerts on threshold crossings.
 
 Single Go binary, built with cobra.
 
@@ -15,7 +15,7 @@ go build -o ~/.local/bin/submon .
 
 ## Commands
 
-### `submon status [zhipu|minimax]`
+### `submon status [zhipu|minimax|opencode]`
 
 Colored panel view of every configured provider (5h / weekly windows, monthly
 MCP quota for zhipu, per-model usage, reset countdowns, data age):
@@ -55,13 +55,14 @@ instantly and survives API outages by showing stale data.
   then the reset countdown; the 5h and weekly windows are separated by a dim
   `/`.
 - Smart provider badge: when the session's model already belongs to the
-  displayed subscription (GLM → zhipu, MiniMax → minimax) the badge is
-  omitted as redundant; otherwise `⚡ZHIPU` / `⚡MINIMAX` is shown.
+  displayed subscription (GLM → zhipu, MiniMax → minimax, opencode → opencode)
+  the badge is omitted as redundant; otherwise `⚡ZHIPU` / `⚡MINIMAX` /
+  `⚡OPENCODE` is shown.
 - Freshness trailer: `(↻2m)` counts down to the next cache refresh while data
   is fresh; `(age 36m)` (yellow) flags data older than the TTL.
 - Provider selection order: `--provider` flag → `ANTHROPIC_BASE_URL` domain
-  detection (`bigmodel.cn`/`z.ai` → zhipu, `minimax` → minimax) →
-  `statusline.default_provider` in config.
+  detection (`bigmodel.cn`/`z.ai` → zhipu, `minimax` → minimax, `opencode` →
+  opencode) → `statusline.default_provider` in config.
 
 Claude Code `~/.claude/settings.json` snippet:
 
@@ -136,12 +137,13 @@ you sync config.toml.
 ```sh
 submon token set zhipu.token            # interactive no-echo prompt
 submon token set minimax.token -        # read from stdin
+submon token set opencode.token         # OPENCODE_API_KEY, encrypted at rest
 submon token ls                         # storage form overview (masked)
 submon token get zhipu.token            # decrypt for scripting
 submon token unset zhipu.token
 ```
 
-Slots: `zhipu.token`, `minimax.token`, `gotify.app_token`.
+Slots: `zhipu.token`, `minimax.token`, `opencode.token`, `gotify.app_token`.
 
 `submon generate config` migrates plaintext tokens (and the legacy
 `~/.minimax-config.json`) to encrypted form in one pass.
@@ -165,6 +167,7 @@ Credentials resolve in this order (encrypted config value wins):
 |---|---|---|
 | zhipu | `[zhipu] token` (encrypted) / `base_url` | `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL` |
 | minimax | `[minimax] token` (encrypted) | `MINIMAX_TOKEN` |
+| opencode | `[opencode] token` (encrypted) | `OPENCODE_API_KEY` |
 
 ## Build
 
@@ -184,5 +187,9 @@ make release    # cross-compile linux/amd64, darwin/amd64, darwin/arm64 into dis
 - MiniMax `coding_plan/remains` returns `model_remains[]` at the top level
   with epoch-ms timestamps; `*_remaining_percent` is literally **remaining** %
   (the opposite of Zhipu). The snapshot layer normalizes both to remaining.
+- OpenCode zen `/zen/go/v1/usage` returns `usage.{rolling,weekly,monthly}`
+  with `percent` (**used** %, like Zhipu) and RFC3339 `resetsAt`. rolling →
+  the 5h short window, weekly → the long window, monthly → the extra monthly
+  row.
 - The old `scripts/zhipu-usage-query.mjs` labeled every TOKENS_LIMIT as
   "5 Hour", dropping the weekly window; submon parses all three windows.

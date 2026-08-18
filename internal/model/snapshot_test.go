@@ -53,3 +53,19 @@ func TestPredictedWastePct(t *testing.T) {
 }
 
 func ptr(v float64) *float64 { return &v }
+
+func TestAllProvidersIncludesOpenCode(t *testing.T) {
+	all := AllProviders()
+	want := []Provider{ProviderZhipu, ProviderMinimax, ProviderOpenCode}
+	if len(all) != len(want) {
+		t.Fatalf("AllProviders() = %v", all)
+	}
+	for i, p := range want {
+		if all[i] != p {
+			t.Fatalf("AllProviders()[%d] = %s, want %s", i, all[i], p)
+		}
+	}
+	if !ValidProvider("opencode") || ValidProvider("unknown") {
+		t.Error("ValidProvider misbehaving")
+	}
+}

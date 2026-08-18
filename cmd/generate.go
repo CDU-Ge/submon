@@ -61,6 +61,7 @@ var generateConfigCmd = &cobra.Command{
 		// Encrypt any plaintext tokens already in config.toml.
 		cfg.Zhipu.Token = migrate("zhipu.token", cfg.Zhipu.Token)
 		cfg.MiniMax.Token = migrate("minimax.token", cfg.MiniMax.Token)
+		cfg.OpenCode.Token = migrate("opencode.token", cfg.OpenCode.Token)
 		cfg.Notify.Gotify.AppToken = migrate("gotify.app_token", cfg.Notify.Gotify.AppToken)
 
 		var buf bytes.Buffer

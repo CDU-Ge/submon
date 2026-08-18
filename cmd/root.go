@@ -10,8 +10,8 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "submon",
-	Short: "Zhipu / MiniMax 订阅配额监控",
-	Long: "submon 监控订阅配额(智谱 bigmodel.cn / z.ai、MiniMax),\n" +
+	Short: "Zhipu / MiniMax / OpenCode 订阅配额监控",
+	Long: "submon 监控订阅配额(智谱 bigmodel.cn / z.ai、MiniMax、OpenCode),\n" +
 		"共享缓存保证 statusline 高频调用不打爆 API。",
 	Version:       "dev",
 	SilenceUsage:  true,

@@ -47,7 +47,7 @@ var notifyStatusCmd = &cobra.Command{
 		}
 
 		any := false
-		for _, name := range []model.Provider{model.ProviderZhipu, model.ProviderMinimax} {
+		for _, name := range model.AllProviders() {
 			e := file.Get(name)
 			if e == nil || e.Snapshot == nil {
 				continue
@@ -136,7 +136,7 @@ var notifyArmCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		for _, name := range []model.Provider{model.ProviderZhipu, model.ProviderMinimax} {
+		for _, name := range model.AllProviders() {
 			if e := file.Get(name); e != nil {
 				e.AlertState = cache.AlertState{Level: "ok", UpdatedAt: time.Now()}
 			}

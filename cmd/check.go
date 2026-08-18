@@ -66,7 +66,7 @@ var checkCmd = &cobra.Command{
 		// ── provider 凭据 ──
 		fmt.Fprintln(out, "── Provider 凭据 ──")
 		srcCfg, _ := config.Load() // 原始形态,用于判断明文/密文
-		for _, name := range []model.Provider{model.ProviderZhipu, model.ProviderMinimax} {
+		for _, name := range model.AllProviders() {
 			src, err := provider.Build(name, cfg)
 			if err != nil {
 				fail("%s: %v", strings.ToUpper(string(name)), err)
@@ -89,7 +89,7 @@ var checkCmd = &cobra.Command{
 		fmt.Fprintln(out, "── 缓存 ──")
 		if cachePath, err := cfg.CachePath(); err == nil {
 			if f, err := cache.New(cachePath).Load(); err == nil {
-				for _, name := range []model.Provider{model.ProviderZhipu, model.ProviderMinimax} {
+				for _, name := range model.AllProviders() {
 					e := f.Get(name)
 					if e == nil || e.Snapshot == nil {
 						warn("%s: 无缓存数据(运行 submon status --force 生成)", strings.ToUpper(string(name)))

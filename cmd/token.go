@@ -23,7 +23,9 @@ var tokenStdin bool
 
 // tokenSlots lists settable credential slots. zhipu.base_url stays plain
 // (it's not a secret).
-func tokenSlots() []string { return []string{"zhipu.token", "minimax.token", "gotify.app_token"} }
+func tokenSlots() []string {
+	return []string{"zhipu.token", "minimax.token", "opencode.token", "gotify.app_token"}
+}
 
 func parseSlot(slot string) (get func(*config.Config) string, set func(*config.Config, string), err error) {
 	switch slot {
@@ -33,6 +35,9 @@ func parseSlot(slot string) (get func(*config.Config) string, set func(*config.C
 	case "minimax.token":
 		return func(c *config.Config) string { return c.MiniMax.Token },
 			func(c *config.Config, v string) { c.MiniMax.Token = v }, nil
+	case "opencode.token":
+		return func(c *config.Config) string { return c.OpenCode.Token },
+			func(c *config.Config, v string) { c.OpenCode.Token = v }, nil
 	case "gotify.app_token":
 		return func(c *config.Config) string { return c.Notify.Gotify.AppToken },
 			func(c *config.Config, v string) { c.Notify.Gotify.AppToken = v }, nil

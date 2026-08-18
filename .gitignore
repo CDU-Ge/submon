@@ -321,3 +321,5 @@ dist
 .yarn/install-state.gz
 .pnp.*
 
+# 最终编译的二进制文件
+submon

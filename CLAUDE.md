@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目
 
-`submon` — Go 单二进制订阅配额监控(智谱 bigmodel.cn/z.ai + MiniMax),服务三个场景:人查(`status`)、Claude Code 状态栏(`statusline`,高频调用、只读缓存)、定时催用提醒(`watch` + systemd timer + Gotify)。UI 文案面向简体中文用户,所有用户可见字符串用中文。
+`submon` — Go 单二进制订阅配额监控(智谱 bigmodel.cn/z.ai + MiniMax + OpenCode zen),服务三个场景:人查(`status`)、Claude Code 状态栏(`statusline`,高频调用、只读缓存)、定时催用提醒(`watch` + systemd timer + Gotify)。UI 文案面向简体中文用户,所有用户可见字符串用中文。
 
 ## 常用命令
 
@@ -31,8 +31,8 @@ provider.Fetch()  ──►  model.Snapshot(统一数据模型)──►  cache(
 watch / status --force                                            └─► watch 评估告警状态机
 ```
 
-- `internal/model`:**Window/Snapshot 归一化模型**。所有 provider 解析成同一形状。关键语义:Zhipu 的 `percentage` 是*已用%*,MiniMax 的 `*_remaining_percent` 是*剩余%*——归一层统一翻转为"剩余"。`Window.PredictedWastePct()` 用速率外推 5h 窗口重置时的浪费。
-- `internal/provider`:Zhipu 按配额条目的 `(type, unit, number)` 元组识别窗口(TOKENS_LIMIT unit=3/5 → 5h,unit=6/1 → 周,TIME_LIMIT unit=5/1 → 月度 MCP);MiniMax 响应字段在顶层(无 data 包装)、时间戳是 epoch 毫秒。`registry.Build` 解析凭据,顺序:**环境变量 > 配置文件 > 内置默认**(zhipu 默认 base_url `https://open.bigmodel.cn/api/anthropic`)。
+- `internal/model`:**Window/Snapshot 归一化模型**。所有 provider 解析成同一形状。关键语义:Zhipu/OpenCode 的 `percentage`/`percent` 是*已用%*,MiniMax 的 `*_remaining_percent` 是*剩余%*——归一层统一翻转为"剩余"。`Window.PredictedWastePct()` 用速率外推 5h 窗口重置时的浪费。`AllProviders()` 是 provider 清单的唯一权威来源。
+- `internal/provider`:Zhipu 按配额条目的 `(type, unit, number)` 元组识别窗口(TOKENS_LIMIT unit=3/5 → 5h,unit=6/1 → 周,TIME_LIMIT unit=5/1 → 月度 MCP);MiniMax 响应字段在顶层(无 data 包装)、时间戳是 epoch 毫秒;OpenCode zen `/zen/go/v1/usage` 的 `percent` 是已用%、`resetsAt` 是 RFC3339,rolling/weekly/monthly 三窗口。`registry.Build` 解析凭据,顺序:**环境变量 > 配置文件 > 内置默认**(zhipu 默认 base_url `https://open.bigmodel.cn/api/anthropic`)。**新增 provider 时**:provider 实现 + `registry.Build` 分支 + `DetectFromBaseURL` + config 结构体 + `AllProviders()` 注册 + token 槽位 + `generate config` 迁移,cmd 层一律遍历 `model.AllProviders()`,不要硬编码列表。
 - `internal/cache`:单 JSON 文件,按 provider 分 key。原子写(temp+rename+flock)。存 snapshot、`RefreshedAt`(statusline 自愈节流)、`AlertState`(告警状态机记忆)、`History`(转换率采样)。
 - `internal/predict`:**weekly 必然浪费**检测——人每天最多 3 个 5h 窗口(要休息),`转换率(中位数 Δweekly/Δ5h) × 剩余窗口数` 与 weekly 剩余对比,算出"无论如何都用不完"的部分。无历史时用保守假设 5h/168h≈3%/窗口。
 - `internal/secret`:AES-256-GCM,密钥**自管理**存 `~/.config/submon/secret.key`(0600),不依赖系统 keyring。config.toml 里 token 存 `enc:v1:nonce:ct`。

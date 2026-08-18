@@ -45,7 +45,8 @@ type statuslineInput struct {
 }
 
 // modelProvider guesses which subscription the session's model belongs to:
-// glm/zhipu names → zhipu, minimax names → minimax, else unknown.
+// glm/zhipu names → zhipu, minimax names → minimax, opencode names → opencode,
+// else unknown.
 func (in *statuslineInput) modelProvider() model.Provider {
 	name := strings.ToLower(in.Model.ID + " " + in.Model.Display)
 	switch {
@@ -53,6 +54,8 @@ func (in *statuslineInput) modelProvider() model.Provider {
 		return model.ProviderZhipu
 	case strings.Contains(name, "minimax"):
 		return model.ProviderMinimax
+	case strings.Contains(name, "opencode"):
+		return model.ProviderOpenCode
 	}
 	return ""
 }
@@ -359,8 +362,8 @@ func gitDirty(cwd string) (bool, error) {
 //     (100K–1M,例如 500000 = 对话到 500K 时压缩)
 //
 // 有效上限 = min(AUTO_COMPACT_WINDOW, 实际窗口, MAX_CONTEXT_TOKENS)。
-// 设置了任一变量时显示 "实际窗口" 与有效上限的对比,否则与 Claude Code
-// 自身报的百分比保持一致。
+// 展示形态不做特殊化:统一 "[used/total pct%]",total 显示有效上限
+// (理论上它就是当前实际可用的最大上下文),百分比基于它计算。
 func contextSegment(cw contextWindowInfo) string {
 	if cw.TotalInputTokens == nil || cw.ContextWindowSize == nil || *cw.ContextWindowSize <= 0 {
 		return ""
@@ -369,28 +372,16 @@ func contextSegment(cw contextWindowInfo) string {
 	total := *cw.ContextWindowSize
 
 	effective := total
-	notes := 0
 	if v := envInt64("CLAUDE_CODE_MAX_CONTEXT_TOKENS"); v > 0 && v < effective {
 		effective = v
-		notes++
 	}
 	if v := envInt64("CLAUDE_CODE_AUTO_COMPACT_WINDOW"); v > 0 && v < effective {
 		effective = v
-		notes++
 	}
 
-	// 以有效上限计算百分比(与 Claude Code 的压缩触发口径对齐)。
 	pct := float64(*cw.TotalInputTokens) / float64(effective) * 100
-	if notes > 0 {
-		// 有环境变量干预:额外展示有效上限,百分比基于它。
-		return ansiWhite + "[" + ansiReset + used + ansiWhite + "·压缩点" + ansiReset +
-			humanTokens(float64(effective)) + fmt.Sprintf(" %.0f%%", pct) + ansiWhite + "]" + ansiReset
-	}
-	pctStr := fmt.Sprintf(" %.0f%%", pct)
-	if cw.UsedPercentage != nil {
-		pctStr = fmt.Sprintf(" %d%%", *cw.UsedPercentage)
-	}
-	return ansiWhite + "[" + ansiReset + used + "/" + humanTokens(float64(total)) + pctStr + ansiWhite + "]" + ansiReset
+	return ansiWhite + "[" + ansiReset + used + "/" + humanTokens(float64(effective)) +
+		fmt.Sprintf(" %.0f%%", pct) + ansiWhite + "]" + ansiReset
 }
 
 // humanTokens 把 token 数格式化为紧凑形式:1.2M / 183.4k / 890。
@@ -523,6 +514,8 @@ func providerBadge(p model.Provider) string {
 		return ansiCyan + label + ansiReset
 	case model.ProviderMinimax:
 		return ansiYellow + label + ansiReset
+	case model.ProviderOpenCode:
+		return ansiMagenta + label + ansiReset
 	}
 	return label
 }
@@ -531,7 +524,7 @@ func providerBadge(p model.Provider) string {
 func resolveStatuslineProvider(cfg *config.Config) (model.Provider, error) {
 	if statuslineProvider != "" {
 		name := model.Provider(statuslineProvider)
-		if name != model.ProviderZhipu && name != model.ProviderMinimax {
+		if !model.ValidProvider(name) {
 			return "", fmt.Errorf("unknown provider %q", statuslineProvider)
 		}
 		return name, nil
@@ -543,7 +536,7 @@ func resolveStatuslineProvider(cfg *config.Config) (model.Provider, error) {
 	}
 	if cfg.Statusline.DefaultProvider != "" {
 		name := model.Provider(cfg.Statusline.DefaultProvider)
-		if name == model.ProviderZhipu || name == model.ProviderMinimax {
+		if model.ValidProvider(name) {
 			return name, nil
 		}
 	}
@@ -605,6 +598,6 @@ func stripANSI(s string) string {
 }
 
 func init() {
-	statuslineCmd.Flags().StringVar(&statuslineProvider, "provider", "", "要展示的 provider(zhipu|minimax)")
+	statuslineCmd.Flags().StringVar(&statuslineProvider, "provider", "", "要展示的 provider(zhipu|minimax|opencode)")
 	rootCmd.AddCommand(statuslineCmd)
 }

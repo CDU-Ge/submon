@@ -13,8 +13,9 @@ const DefaultZhipuBaseURL = "https://open.bigmodel.cn/api/anthropic"
 
 // Build 构造 provider 数据源。凭据解析顺序:环境变量 > 配置文件 > 内置默认。
 //
-//	zhipu:   ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL > [zhipu] token/base_url > 默认基址
-//	minimax: MINIMAX_TOKEN > [minimax] token
+//	zhipu:    ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL > [zhipu] token/base_url > 默认基址
+//	minimax:  MINIMAX_TOKEN > [minimax] token
+//	opencode: OPENCODE_API_KEY > [opencode] token
 //
 // 调用方需传入已解密的配置(Config.DecryptSecrets)。
 func Build(name model.Provider, cfg *config.Config) (Source, error) {
@@ -27,6 +28,9 @@ func Build(name model.Provider, cfg *config.Config) (Source, error) {
 	case model.ProviderMinimax:
 		token := firstNonEmpty(os.Getenv("MINIMAX_TOKEN"), cfg.MiniMax.Token)
 		return &MiniMax{Token: token}, nil
+	case model.ProviderOpenCode:
+		token := firstNonEmpty(os.Getenv("OPENCODE_API_KEY"), cfg.OpenCode.Token)
+		return &OpenCode{Token: token}, nil
 	}
 	return nil, &ErrNotConfigured{Reason: "未知 provider: " + string(name)}
 }
