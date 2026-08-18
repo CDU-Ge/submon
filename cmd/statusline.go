@@ -33,6 +33,12 @@ type contextWindowInfo struct {
 	UsedPercentage    *int64 `json:"used_percentage"`
 }
 
+// rateLimitWindow 是 Claude Code stdin 里的官方订阅限额窗口。
+type rateLimitWindow struct {
+	UsedPercentage *float64 `json:"used_percentage"`
+	ResetsAt       *int64   `json:"resets_at"` // epoch 秒
+}
+
 type statuslineInput struct {
 	Workspace struct {
 		CurrentDir string `json:"current_dir"`
@@ -42,6 +48,14 @@ type statuslineInput struct {
 		Display string `json:"display_name"`
 	} `json:"model"`
 	ContextWindow contextWindowInfo `json:"context_window"`
+	RateLimits    struct {
+		FiveHour rateLimitWindow `json:"five_hour"`
+		SevenDay rateLimitWindow `json:"seven_day"`
+	} `json:"rate_limits"`
+	FastMode bool `json:"fast_mode"`
+	Effort   struct {
+		Level string `json:"level"`
+	} `json:"effort"`
 }
 
 // modelProvider guesses which subscription the session's model belongs to:
@@ -85,6 +99,13 @@ var statuslineCmd = &cobra.Command{
 		fmt.Fprintln(out, renderStatusline(&in, cfg, time.Now()))
 		return nil
 	},
+}
+
+// isOfficialClaude 报告当前会话是否跑在 Claude 官方订阅上(而非网关)。
+// 仅此时 stdin 的 rate_limits 字段才存在,也仅此时启用 claude 伪 provider。
+func isOfficialClaude() bool {
+	base := strings.ToLower(os.Getenv("ANTHROPIC_BASE_URL"))
+	return base == "" || strings.Contains(base, "anthropic.com")
 }
 
 const (
@@ -221,11 +242,12 @@ func freshTrailer(cfg *config.Config, now time.Time) string {
 	return ansiWhite + fmt.Sprintf("(↻%s)", humanDuration(ttl-age)) + ansiReset
 }
 
-// renderStatusline 按配置的 layout 方案渲染。
+// renderStatusline 按配置的 layout 方案渲染;COLUMNS 过窄时自动降级到
+// 极简排版,避免终端截断(Claude Code 在运行脚本前设置 COLUMNS/LINES)。
 //
-//	layout a(默认,当前方案): ➜ dir git:(main)✗ Model [ctx] 5h 72% left·1h9m weekly 74% left (↻2m)
-//	layout b(信息优先):      Model · ctx 15% used · dir · ⎇main · 5h 72% left (1h9m) · weekly 74% left (5d10h)
-//	layout c(极简):         dir main · 15% · 72%/74% (↻2m)
+//	layout a(默认): ➜ dir git:(main)✗ Model [ctx] 2h50m 81% left weekly 69% left 5d6h (↻3m)
+//	layout b(信息优先): Model · ctx 15% used · dir · ⎇main · 5h 72% left (1h9m) · weekly 74% left (5d10h)
+//	layout c(极简):    dir main · 15% · 72%/74% (↻2m)
 func renderStatusline(in *statuslineInput, cfg *config.Config, now time.Time) string {
 	modelName := stripANSI(in.Model.Display)
 
@@ -235,7 +257,12 @@ func renderStatusline(in *statuslineInput, cfg *config.Config, now time.Time) st
 	}
 	dir := filepath.Base(cwd)
 
-	switch cfg.Statusline.Layout {
+	layout := cfg.Statusline.Layout
+	if layout != "c" && termColumns() < 100 {
+		// 窄终端:估算 a/b 排版放不下,自动降级到极简。
+		layout = "c"
+	}
+	switch layout {
 	case "b":
 		return renderLayoutB(in, cfg, modelName, dir, cwd, now)
 	case "c":
@@ -243,6 +270,14 @@ func renderStatusline(in *statuslineInput, cfg *config.Config, now time.Time) st
 	default:
 		return renderLayoutA(in, cfg, modelName, dir, cwd, now)
 	}
+}
+
+// termColumns 读取 Claude Code 注入的终端宽度;读不到返回一个大数(不降级)。
+func termColumns() int {
+	if v := envInt64("COLUMNS"); v > 0 {
+		return int(v)
+	}
+	return 1 << 30
 }
 
 // renderLayoutA: robbyrussell 经典布局(当前默认)。
@@ -258,6 +293,9 @@ func renderLayoutA(in *statuslineInput, cfg *config.Config, modelName, dir, cwd 
 
 	if modelName != "" {
 		seg := modelName
+		if mark := sessionMark(in); mark != "" {
+			seg += " " + mark
+		}
 		if ctx := contextSegment(in.ContextWindow); ctx != "" {
 			seg += " " + ctx
 		}
@@ -266,11 +304,72 @@ func renderLayoutA(in *statuslineInput, cfg *config.Config, modelName, dir, cwd 
 		segs = append(segs, ctx)
 	}
 
-	if q := quotaSegment(cfg, in.modelProvider(), now); q != "" {
+	if q := quotaSegmentFor(in, cfg, now); q != "" {
 		segs = append(segs, q)
 	}
 	sep := ansiWhite + " - " + ansiReset
 	return strings.Join(segs, sep)
+}
+
+// sessionMark 汇总会话开关:fast 模式 ⚡fast、effort 级别(仅非默认时)。
+// 这些信息只在这里出现,单行不占额外段。
+func sessionMark(in *statuslineInput) string {
+	var parts []string
+	if in.FastMode {
+		parts = append(parts, ansiYellow+"⚡fast"+ansiReset)
+	}
+	switch in.Effort.Level {
+	case "low", "xhigh", "max": // medium/high 是常规档,不标
+		parts = append(parts, ansiMagenta+in.Effort.Level+ansiReset)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, " ")
+}
+
+// quotaSegmentFor 选择配额段来源:官方模式且 stdin 带 rate_limits 时,
+// 直接用官方数据(零 API、零缓存);否则回落到订阅 provider 缓存。
+func quotaSegmentFor(in *statuslineInput, cfg *config.Config, now time.Time) string {
+	if isOfficialClaude() {
+		if q := claudeQuotaSegment(in, now); q != "" {
+			return q
+		}
+	}
+	return quotaSegment(cfg, in.modelProvider(), now)
+}
+
+// claudeQuotaSegment 从 stdin 的 rate_limits 渲染官方订阅限额段。
+// 沿用统一窗口形态:5h 倒计时打头,weekly 标签打头。
+func claudeQuotaSegment(in *statuslineInput, now time.Time) string {
+	cfg := config.Default()
+	var parts []string
+	if w := in.RateLimits.FiveHour; w.UsedPercentage != nil {
+		win := rateLimitToWindow(w, "5h")
+		parts = append(parts, colorizeWindow("5h", win, now, cfg))
+	}
+	if w := in.RateLimits.SevenDay; w.UsedPercentage != nil {
+		win := rateLimitToWindow(w, "week")
+		parts = append(parts, colorizeWindow("weekly", win, now, cfg))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, ansiWhite+" - "+ansiReset)
+}
+
+// rateLimitToWindow 把 stdin 的官方限额窗口转成 model.Window(剩余语义)。
+func rateLimitToWindow(w rateLimitWindow, label string) *model.Window {
+	win := &model.Window{Label: label}
+	rem := 100 - *w.UsedPercentage
+	used := *w.UsedPercentage
+	win.RemainingPct = &rem
+	win.UsedPct = &used
+	if w.ResetsAt != nil {
+		t := time.Unix(*w.ResetsAt, 0)
+		win.ResetAt = &t
+	}
+	return win
 }
 
 // renderLayoutB: 信息优先 —— model 打头,细粒度分段,branch 用 ⎇ 符号。
@@ -307,17 +406,61 @@ func renderLayoutC(in *statuslineInput, cfg *config.Config, modelName, dir, cwd 
 	if branch, err := gitBranch(cwd); err == nil && branch != "" {
 		segs = append(segs, ansiWhite+branch+ansiReset)
 	}
+	// 上下文%:用量越高越红(与配额剩余色互补,阈值共用)。
 	if in.ContextWindow.UsedPercentage != nil {
-		segs = append(segs, fmt.Sprintf("%s%d%%%s", ansiGreen, *in.ContextWindow.UsedPercentage, ansiReset))
+		used := float64(*in.ContextWindow.UsedPercentage)
+		segs = append(segs, fmt.Sprintf("%s%.0f%%%s", ctxUsedColor(used), used, ansiReset))
 	} else if in.ContextWindow.TotalInputTokens != nil && in.ContextWindow.ContextWindowSize != nil && *in.ContextWindow.ContextWindowSize > 0 {
-		pct := float64(*in.ContextWindow.TotalInputTokens) / float64(*in.ContextWindow.ContextWindowSize) * 100
-		segs = append(segs, fmt.Sprintf("%s%.0f%%%s", ansiGreen, pct, ansiReset))
+		effective := *in.ContextWindow.ContextWindowSize
+		if v := envInt64("CLAUDE_CODE_MAX_CONTEXT_TOKENS"); v > 0 && v < effective {
+			effective = v
+		}
+		if v := envInt64("CLAUDE_CODE_AUTO_COMPACT_WINDOW"); v > 0 && v < effective {
+			effective = v
+		}
+		pct := float64(*in.ContextWindow.TotalInputTokens) / float64(effective) * 100
+		segs = append(segs, fmt.Sprintf("%s%.0f%%%s", ctxUsedColor(pct), pct, ansiReset))
+	}
+	if isOfficialClaude() {
+		if q := claudeMinimalQuota(in); q != "" {
+			segs = append(segs, q)
+			sep := ansiWhite + " · " + ansiReset
+			return strings.Join(segs, sep)
+		}
 	}
 	if q := quotaMinimalSegment(cfg, in.modelProvider(), now); q != "" {
 		segs = append(segs, q)
 	}
 	sep := ansiWhite + " · " + ansiReset
 	return strings.Join(segs, sep)
+}
+
+// claudeMinimalQuota: 极简排版下的官方限额 "12%/34%"(剩余%)。
+func claudeMinimalQuota(in *statuslineInput) string {
+	var segs []string
+	for _, w := range []rateLimitWindow{in.RateLimits.FiveHour, in.RateLimits.SevenDay} {
+		if w.UsedPercentage == nil {
+			continue
+		}
+		rem := 100 - *w.UsedPercentage
+		segs = append(segs, fmt.Sprintf("%s%.0f%%%s", pctColor(rem, config.Default()), rem, ansiReset))
+	}
+	if len(segs) == 0 {
+		return ""
+	}
+	return strings.Join(segs, ansiWhite+"/"+ansiReset)
+}
+
+// ctxUsedColor 上下文已用%配色:>80 红,>60 黄,其余绿。
+// (与配额"剩余%"阈值方向相反:这里越高越危险。)
+func ctxUsedColor(used float64) string {
+	switch {
+	case used > 80:
+		return ansiRed
+	case used > 60:
+		return ansiYellow
+	}
+	return ansiGreen
 }
 
 // gitSegment renders "git:(branch)✗" in robbyrussell colors; empty outside repos.
@@ -380,8 +523,8 @@ func contextSegment(cw contextWindowInfo) string {
 	}
 
 	pct := float64(*cw.TotalInputTokens) / float64(effective) * 100
-	return ansiWhite + "[" + ansiReset + used + "/" + humanTokens(float64(effective)) +
-		fmt.Sprintf(" %.0f%%", pct) + ansiWhite + "]" + ansiReset
+	return ansiWhite + "[" + ansiReset + used + "/" + humanTokens(float64(effective)) + " " +
+		ctxUsedColor(pct) + fmt.Sprintf("%.0f%%", pct) + ansiReset + ansiWhite + "]" + ansiReset
 }
 
 // humanTokens 把 token 数格式化为紧凑形式:1.2M / 183.4k / 890。

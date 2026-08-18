@@ -10,7 +10,40 @@ import (
 	"github.com/ge/subscription-monitor/internal/model"
 )
 
-const statusBarWidth = 12
+const statusBarWidth = 10
+
+// barPartialFrac: Unicode 八分块字符,把一格进度拆成 8 个粒度。
+// 进度条精度 = width × 8;10 格 = 80 档,足够 1% 粒度。
+var barPartialFrac = [8]rune{'░', '▁', '▂', '▃', '▄', '▅', '▆', '▇'} // frac 0..7/8(0 用全空格)
+
+// miniBar 渲染精细进度条:满格用 █,最后未满一格用最近的八分块字符。
+// 例(width=10, pct=73):███████▎░░  ← 7 满格 + 2/8 块 + 2 空。
+func miniBar(pct float64, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	cells := pct / 100 * float64(width)
+	full := int(cells)
+	frac := int((cells - float64(full)) * 8)
+	if frac > 7 {
+		frac = 7
+	}
+	if frac < 0 {
+		frac = 0
+	}
+	var b strings.Builder
+	for i := 0; i < full && i < width; i++ {
+		b.WriteRune('█')
+	}
+	if full < width && frac > 0 {
+		b.WriteRune(barPartialFrac[frac])
+		full++ // 部分格占掉了这一格
+	}
+	for i := full; i < width; i++ {
+		b.WriteRune('░')
+	}
+	return b.String()
+}
 
 // renderStatus prints the human-rich panel view for one provider:
 //
@@ -62,8 +95,9 @@ func renderStatus(w io.Writer, s *model.Snapshot, now time.Time, cfg *config.Con
 	}
 }
 
-// renderStatusWindow draws one quota row: dim label, threshold-colored bar
-// and percentage, reset countdown, and counts when the API reports them.
+// renderStatusWindow draws one quota row: label, threshold-colored fine-grain
+// bar and percentage, reset countdown, and counts when the API reports them.
+// 条形只到 80% 宽度后接百分比 —— 剩余语义:填充 = 剩余额度。
 func renderStatusWindow(w io.Writer, label string, win *model.Window, now time.Time, cfg *config.Config) {
 	pctStr, bar, color := "  n/a", strings.Repeat("░", statusBarWidth), ansiWhite
 	if win.RemainingPct != nil {
@@ -104,14 +138,6 @@ func pctColor(pct float64, cfg *config.Config) string {
 	default:
 		return ansiGreen
 	}
-}
-
-func miniBar(pct float64, width int) string {
-	filled := int(pct / 100 * float64(width))
-	if filled > width {
-		filled = width
-	}
-	return strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
 }
 
 func formatCounts(win *model.Window) string {
