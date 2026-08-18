@@ -25,6 +25,14 @@ type AlertState struct {
 	LastMessage string `json:"last_message,omitempty"`
 }
 
+// Sample is one point of usage history (percentages of used) used by the
+// predictor to estimate burn rates and the 5h↔weekly conversion.
+type Sample struct {
+	T         time.Time `json:"t"`
+	ShortUsed float64   `json:"su,omitempty"`
+	LongUsed  float64   `json:"lu,omitempty"`
+}
+
 // Entry is one provider's cached data.
 type Entry struct {
 	Snapshot *model.Snapshot `json:"snapshot,omitempty"`
@@ -37,6 +45,25 @@ type Entry struct {
 	// most once per TTL/2.
 	RefreshedAt time.Time  `json:"refreshed_at,omitempty"`
 	AlertState  AlertState `json:"alert_state"`
+	// History of usage samples (watch appends one per run, bounded).
+	History []Sample `json:"history,omitempty"`
+}
+
+// AppendSample adds a usage sample, pruning to keep at most maxSamples
+// (default enough for ~7 days of 5-minute samples).
+func (f *File) AppendSample(provider model.Provider, s Sample, maxSamples int) {
+	e := f.Entries[string(provider)]
+	if e == nil {
+		e = &Entry{}
+		f.Entries[string(provider)] = e
+	}
+	e.History = append(e.History, s)
+	if maxSamples <= 0 {
+		maxSamples = 2100
+	}
+	if len(e.History) > maxSamples {
+		e.History = e.History[len(e.History)-maxSamples:]
+	}
 }
 
 type File struct {
