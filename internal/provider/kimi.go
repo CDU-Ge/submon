@@ -8,11 +8,42 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/ge/subscription-monitor/internal/model"
 )
+
+// flexFloat 接受 JSON number 与 string-编码 number。Kimi 真实 API 在不同端点
+// 上同一字段(limit / used / remaining / reset_in / duration)交替出现两种
+// 类型,缺哪个都会让 `*float64` 拒绝整个 payload。这是上游已经观察到的事实
+// 形态,所以写在 kimi.go 里 — 任何后续遇到相同形态的 provider 直接 import。
+type flexFloat float64
+
+func (f *flexFloat) UnmarshalJSON(data []byte) error {
+	// 先试 number(JSON 字面数字、RFC3339 之外的科学计数都走 json.Number)。
+	var n json.Number
+	if err := json.Unmarshal(data, &n); err == nil {
+		if v, err := n.Float64(); err == nil {
+			*f = flexFloat(v)
+			return nil
+		}
+	}
+	// 再试 string — 真实 API 偶尔把数字包成 "1000"。
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+		if err != nil {
+			return fmt.Errorf("flexFloat: cannot parse %q: %w", s, err)
+		}
+		*f = flexFloat(v)
+		return nil
+	}
+	return fmt.Errorf("flexFloat: cannot unmarshal %s as number", string(data))
+}
+
+func (f flexFloat) Float64() float64 { return float64(f) }
 
 // Kimi queries kimi.com Coding Plan usage.
 //
@@ -106,16 +137,16 @@ func (e *httpStatusError) Error() string {
 // kimiWindowSpec describes a window's length; duration+timeUnit lets us
 // normalize to Go duration.
 type kimiWindowSpec struct {
-	Duration *float64 `json:"duration"`
-	TimeUnit string   `json:"timeUnit"`
+	Duration *flexFloat `json:"duration"`
+	TimeUnit string     `json:"timeUnit"`
 }
 
 // kimiWindowDetail is the {used, limit, remaining} block; reset fields ride
 // along on the parent row in shape A.
 type kimiWindowDetail struct {
-	Used      *float64 `json:"used"`
-	Limit     *float64 `json:"limit"`
-	Remaining *float64 `json:"remaining"`
+	Used      *flexFloat `json:"used"`
+	Limit     *flexFloat `json:"limit"`
+	Remaining *flexFloat `json:"remaining"`
 }
 
 // kimiUsageRow is the unified shape: in shape A it appears directly in
@@ -127,13 +158,13 @@ type kimiUsageRow struct {
 	Window    *kimiWindowSpec   `json:"window,omitempty"`
 	Detail    *kimiWindowDetail `json:"detail,omitempty"`
 	// shape A inline fields; shape B omits these (uses Detail).
-	Used      *float64 `json:"used,omitempty"`
-	Limit     *float64 `json:"limit,omitempty"`
-	Remaining *float64 `json:"remaining,omitempty"`
+	Used      *flexFloat `json:"used,omitempty"`
+	Limit     *flexFloat `json:"limit,omitempty"`
+	Remaining *flexFloat `json:"remaining,omitempty"`
 	// Reset hints (any of these can be missing):
-	ResetTime string   `json:"resetTime,omitempty"`
-	ResetAt   string   `json:"reset_at,omitempty"`
-	ResetIn   *float64 `json:"reset_in,omitempty"`
+	ResetTime string     `json:"resetTime,omitempty"`
+	ResetAt   string     `json:"reset_at,omitempty"`
+	ResetIn   *flexFloat `json:"reset_in,omitempty"`
 }
 
 type kimiResponseA struct {
@@ -318,7 +349,7 @@ func kimiWindowLength(w kimiWindowSpec) (time.Duration, bool) {
 	if w.Duration == nil {
 		return 0, false
 	}
-	d := *w.Duration
+	d := float64(*w.Duration)
 	switch strings.ToUpper(w.TimeUnit) {
 	case "MINUTE":
 		return time.Duration(d) * time.Minute, true
@@ -348,7 +379,7 @@ func kimiRowToWindow(r kimiUsageRow, label string, length time.Duration) *model.
 // kimiDetailToWindow builds a model.Window from a {used, limit, remaining}
 // block + reset hints. Length is only used to derive StartedAt (rate
 // extrapolation needs it).
-func kimiDetailToWindow(d kimiWindowDetail, label string, length time.Duration, resetTime, resetAt string, resetIn *float64) *model.Window {
+func kimiDetailToWindow(d kimiWindowDetail, label string, length time.Duration, resetTime, resetAt string, resetIn *flexFloat) *model.Window {
 	pct := remainingFromDetail(d)
 	if pct == nil {
 		return nil
@@ -375,12 +406,13 @@ func kimiDetailToWindow(d kimiWindowDetail, label string, length time.Duration, 
 // the data is insufficient.
 func remainingFromDetail(d kimiWindowDetail) *float64 {
 	if d.Limit != nil && *d.Limit > 0 {
+		limit := float64(*d.Limit)
 		if d.Remaining != nil {
-			v := clampPct((*d.Remaining / *d.Limit) * 100)
+			v := clampPct((float64(*d.Remaining) / limit) * 100)
 			return &v
 		}
 		if d.Used != nil {
-			v := clampPct((1 - *d.Used / *d.Limit) * 100)
+			v := clampPct((1 - float64(*d.Used)/limit) * 100)
 			return &v
 		}
 	}
@@ -390,7 +422,7 @@ func remainingFromDetail(d kimiWindowDetail) *float64 {
 // kimiResolveReset tries the three reset sources in order: ISO string
 // (resetTime/reset_at), then numeric seconds-from-now (reset_in). Returns ok
 // false when neither resolves.
-func kimiResolveReset(resetTime, resetAt string, resetIn *float64, now time.Time) (time.Time, bool) {
+func kimiResolveReset(resetTime, resetAt string, resetIn *flexFloat, now time.Time) (time.Time, bool) {
 	for _, s := range []string{resetTime, resetAt} {
 		if s == "" {
 			continue
@@ -403,14 +435,14 @@ func kimiResolveReset(resetTime, resetAt string, resetIn *float64, now time.Time
 		}
 	}
 	if resetIn != nil {
-		return now.Add(time.Duration(*resetIn) * time.Second), true
+		return now.Add(time.Duration(float64(*resetIn)) * time.Second), true
 	}
 	return time.Time{}, false
 }
 
-func derefFloat(p *float64) float64 {
+func derefFloat(p *flexFloat) float64 {
 	if p == nil {
 		return 0
 	}
-	return *p
+	return float64(*p)
 }

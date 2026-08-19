@@ -301,3 +301,107 @@ func TestKimiHealthcheckJSONShape(t *testing.T) {
 		t.Errorf("shape B: usage=%v, limits=%d", b.Usage, len(b.Limits))
 	}
 }
+
+// TestKimiFetchShapeBStringLimit 回归真实 API:同一字段在不同端点交替出
+// string / number。用户报告的错误是 "kimiUsageRow.usage.limit of type
+// float64" — 该路径只可能来自 shape B 的 Usage 字段,所以这个 fixture 是
+// 直接覆盖用户报错形状。
+func TestKimiFetchShapeBStringLimit(t *testing.T) {
+	payload := `{
+	  "usage": {
+	    "used": "50",
+	    "limit": "1000",
+	    "remaining": "950",
+	    "resetTime": "2026-08-26T00:00:00Z"
+	  },
+	  "limits": [
+	    {
+	      "window": {"duration": "5", "timeUnit": "HOUR"},
+	      "detail": {"used": "30", "limit": "200", "remaining": "170"},
+	      "resetTime": "2026-08-19T13:00:00Z"
+	    }
+	  ]
+	}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer srv.Close()
+
+	k := &Kimi{Token: "k", BaseURL: srv.URL}
+	snap, err := k.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("string-typed limit rejected: %v", err)
+	}
+	if snap.LongWindow == nil || snap.LongWindow.RemainingPct == nil || *snap.LongWindow.RemainingPct != 95 {
+		t.Errorf("long remaining = %v, want 95", snap.LongWindow.RemainingPct)
+	}
+	if snap.ShortWindow == nil || snap.ShortWindow.RemainingPct == nil || *snap.ShortWindow.RemainingPct != 85 {
+		t.Errorf("short remaining = %v, want 85", snap.ShortWindow.RemainingPct)
+	}
+}
+
+// TestKimiFetchShapeAStringNumber 混合形态:行内是 number,nested detail 是 string
+// (或反之),不能因为某一行 string 就让整个 payload 崩。
+func TestKimiFetchShapeAMixedNumberString(t *testing.T) {
+	payload := `{
+	  "data": [
+	    {
+	      "model_name": "all",
+	      "used": 100,
+	      "limit": 1000,
+	      "remaining": 900,
+	      "resetTime": "2026-08-26T00:00:00Z"
+	    },
+	    {
+	      "model_name": "kimi-k2",
+	      "window": {"duration": 5, "timeUnit": "HOUR"},
+	      "used": "40",
+	      "limit": "200",
+	      "remaining": "160",
+	      "reset_in": "7200"
+	    }
+	  ]
+	}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer srv.Close()
+
+	k := &Kimi{Token: "k", BaseURL: srv.URL}
+	snap, err := k.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("mixed string/number payload rejected: %v", err)
+	}
+	if snap.LongWindow == nil || *snap.LongWindow.RemainingPct != 90 {
+		t.Errorf("long remaining = %v, want 90", snap.LongWindow.RemainingPct)
+	}
+	if snap.ShortWindow == nil || *snap.ShortWindow.RemainingPct != 80 {
+		t.Errorf("short remaining = %v, want 80", snap.ShortWindow.RemainingPct)
+	}
+	if snap.ShortWindow.ResetAt == nil {
+		t.Error("short ResetAt missing — reset_in should still resolve")
+	}
+}
+
+// TestFlexFloatUnit 直接验证 UnmarshalJSON 同时吃 number / string。
+func TestFlexFloatUnit(t *testing.T) {
+	var f flexFloat
+	if err := json.Unmarshal([]byte(`42`), &f); err != nil {
+		t.Fatalf("number: %v", err)
+	}
+	if float64(f) != 42 {
+		t.Errorf("number decoded = %v, want 42", float64(f))
+	}
+	if err := json.Unmarshal([]byte(`"3.14"`), &f); err != nil {
+		t.Fatalf("string: %v", err)
+	}
+	if float64(f) != 3.14 {
+		t.Errorf("string decoded = %v, want 3.14", float64(f))
+	}
+	if err := json.Unmarshal([]byte(`"not-a-number"`), &f); err == nil {
+		t.Error("garbage string should fail")
+	}
+	if err := json.Unmarshal([]byte(`true`), &f); err == nil {
+		t.Error("bool should fail")
+	}
+}
