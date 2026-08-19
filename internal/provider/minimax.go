@@ -43,6 +43,17 @@ type MiniMax struct {
 
 func (m *MiniMax) Name() model.Provider { return model.ProviderMinimax }
 
+// minimaxRules 是 MiniMax 在内建 URL 检测中的全部声明。两套 host(minimax.io
+// 与 minimaxi.com)是两个产品时期的不同域名,都保留。
+func minimaxRules() []Rule {
+	return []Rule{
+		{Provider: model.ProviderMinimax, Hosts: []string{
+			"*.minimax.io", "minimax.io",
+			"*.minimaxi.com", "minimaxi.com",
+		}},
+	}
+}
+
 func (m *MiniMax) client() *http.Client {
 	if m.Client != nil {
 		return m.Client

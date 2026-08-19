@@ -54,8 +54,6 @@ type Config struct {
 		} `toml:"gotify"`
 	} `toml:"notify"`
 	Statusline struct {
-		// DefaultProvider: 无法自动识别时的默认 provider("zhipu"|"minimax")。
-		DefaultProvider string `toml:"default_provider"`
 		// Layout: 状态栏排版方案("a"|"b"|"c"),默认 "a"。详见 README。
 		Layout string `toml:"layout"`
 	} `toml:"statusline"`
@@ -141,9 +139,6 @@ func Load() (*Config, error) {
 	// 环境变量覆盖,便于临时切换方案预览:SUBMON_LAYOUT=a|b|c
 	if v := os.Getenv("SUBMON_LAYOUT"); v != "" {
 		cfg.Statusline.Layout = v
-	}
-	if cfg.Statusline.DefaultProvider == "" {
-		cfg.Statusline.DefaultProvider = os.Getenv("SUBMON_PROVIDER")
 	}
 	return cfg, nil
 }

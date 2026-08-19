@@ -262,10 +262,10 @@ func TestKimiBuildAndDetect(t *testing.T) {
 	}
 
 	// DetectFromBaseURL: kimi.com 与 moonshot 都识别。
-	if got, err := DetectFromBaseURL("https://api.kimi.com/coding/v1"); err != nil || got != model.ProviderKimi {
+	if got, err := DetectFromBaseURL("https://api.kimi.com/coding/v1", nil); err != nil || got != model.ProviderKimi {
 		t.Errorf("DetectFromBaseURL(kimi.com) = %v, %v", got, err)
 	}
-	if got, err := DetectFromBaseURL("https://api.moonshot.cn/v1"); err != nil || got != model.ProviderKimi {
+	if got, err := DetectFromBaseURL("https://api.moonshot.cn/v1", nil); err != nil || got != model.ProviderKimi {
 		t.Errorf("DetectFromBaseURL(moonshot.cn) = %v, %v", got, err)
 	}
 }

@@ -89,7 +89,8 @@ var statuslineCmd = &cobra.Command{
 	Short: "Claude Code 状态栏(目录/git/模型/上下文 + 配额)",
 	Long: "输出单行状态栏:左稳定(目录/git 分支/模型)→ 中关心(token 使用)\n" +
 		"→ 右变动(effort/fast/订阅配额)。只读缓存,不联网。\n" +
-		"provider 选择顺序: --provider > ANTHROPIC_BASE_URL 自动识别 > 配置默认值。",
+		"provider 选择顺序: --provider > $ANTHROPIC_BASE_URL 自动识别(内建规则 + [[provider_detection]] 用户规则)。\n" +
+		"都没有命中 → statusline 不显示配额段,不强行猜 provider。",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
 		if err != nil {
@@ -411,7 +412,8 @@ func fastLabel(in *statuslineInput) string {
 
 // quotaSegmentFor 选择配额段来源:官方模式且 stdin 带 rate_limits 时,
 // 直接用官方数据(零 API、零缓存);否则回落到订阅 provider 缓存;
-// 缓存里哪个 provider 有数据就用哪个(未配置 default_provider 时)。
+// provider 选择走 resolveStatuslineProvider(--provider / ANTHROPIC_BASE_URL)
+// 失败时取缓存里最近有数据的 provider 当兜底,让用户至少看到已订阅的配额。
 func quotaSegmentFor(in *statuslineInput, cfg *config.Config, now time.Time) string {
 	if isOfficialClaude() {
 		if q := claudeQuotaSegment(in, now); q != "" {
@@ -818,7 +820,14 @@ func providerBadge(p model.Provider) string {
 	return label
 }
 
-// resolveStatuslineProvider: --provider flag > ANTHROPIC_BASE_URL > config.
+// resolveStatuslineProvider: --provider flag > ANTHROPIC_BASE_URL 自动识别。
+//
+// 没有这两条时直接返回 error — statusline 默认不显示,不静默猜测某个
+// provider(用户可能只有 zhipu 想看,强行给 minimax 会误导)。想看
+// 非当前会话的 provider,用 `submon status <provider>` 或 `submon statusline --provider X`。
+//
+// 检测规则由各 provider 在自己文件里声明(DefaultDetectionRules 聚合),
+// 代码层维护,不在 config.toml 暴露给用户。
 func resolveStatuslineProvider(cfg *config.Config) (model.Provider, error) {
 	if statuslineProvider != "" {
 		name := model.Provider(statuslineProvider)
@@ -828,17 +837,11 @@ func resolveStatuslineProvider(cfg *config.Config) (model.Provider, error) {
 		return name, nil
 	}
 	if base := os.Getenv("ANTHROPIC_BASE_URL"); base != "" {
-		if name, err := provider.DetectFromBaseURL(base); err == nil {
+		if name, err := provider.DetectFromBaseURL(base, nil); err == nil {
 			return name, nil
 		}
 	}
-	if cfg.Statusline.DefaultProvider != "" {
-		name := model.Provider(cfg.Statusline.DefaultProvider)
-		if model.ValidProvider(name) {
-			return name, nil
-		}
-	}
-	return "", fmt.Errorf("cannot resolve provider")
+	return "", fmt.Errorf("cannot resolve provider (set --provider or ANTHROPIC_BASE_URL)")
 }
 
 // colorizeWindow 渲染一个窗口段,两种形态:

@@ -37,7 +37,7 @@ watch / status --force                                            └─► watc
 - `internal/predict`:**weekly 必然浪费**检测——人每天最多 3 个 5h 窗口(要休息),`转换率(中位数 Δweekly/Δ5h) × 剩余窗口数` 与 weekly 剩余对比,算出"无论如何都用不完"的部分。无历史时用保守假设 5h/168h≈3%/窗口。
 - `internal/secret`:AES-256-GCM,密钥**自管理**存 `~/.config/submon/secret.key`(0600),不依赖系统 keyring。config.toml 里 token 存 `enc:v1:nonce:ct`。
 - `cmd/watch.go`:两级告警状态机(weekly 必然浪费随时评估;5h 窗口仅重置前 `remind_before` 内评估),组合状态 `weekly:short` 变化才推送,推送失败不推进状态。语义是**催用**(要到期了抓紧用),不是不足告警。
-- `cmd/statusline.go`:必须秒回、永不联网、永不 hard-fail。缓存过期时 fork 后台 `watch --quiet` 自愈(下帧生效)。provider 识别:`--provider` > `ANTHROPIC_BASE_URL` 域名 > 配置默认。模型名含 GLM/zhipu/minimax 时省略对应 provider badge(信息冗余)。
+- `cmd/statusline.go`:必须秒回、永不联网、永不 hard-fail。缓存过期时 fork 后台 `watch --quiet` 自愈(下帧生效)。provider 识别:`--provider` > `ANTHROPIC_BASE_URL` 自动识别(走各 provider 在自己文件里声明的 `xxxRules()`,`DefaultDetectionRules` 聚合;glob `*.z.ai` / path 前缀 / priority 在 `internal/provider/provider.go:Rule`)。三处都没命中 statusline 不显示配额段(没有 default_provider 兜底,避免误导)。模型名含 GLM/zhipu/minimax 时省略对应 provider badge(信息冗余)。**检测规则不进 config.toml** — 加 provider 时改文件。
 - 凭据解密入口统一是 `cmd/token.go` 的 `loadDecryptedConfig()`(config.Load + DecryptSecrets);generate/ls 等展示存储形态的场景用原始 `config.Load()`。
 
 ## 凭据配置(新增)

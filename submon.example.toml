@@ -52,10 +52,19 @@ app_token = "Axxxxxxxxxxxx"  # 建议用 `submon token set gotify.app_token` 加
 priority = 5
 
 [statusline]
-# ANTHROPIC_BASE_URL 无法识别时的默认 provider:"zhipu" | "minimax"。
-default_provider = "zhipu"
 # 排版方案:a|b|c,详见 README。也可用环境变量 SUBMON_LAYOUT 临时切换。
 #   a = ➜ dir git:(main)✗ Model [ctx] 5h 72% left·1h9m weekly 74% left (↻2m)
 #   b = Model · ctx 15% used · dir · ⎇main · 5h 72% left (1h9m) · weekly 74% left (5d10h)
 #   c = dir main · 15% · 72%/74% (↻2m)
 layout = "a"
+
+# statusline provider 选择:
+#   1. --provider 命令行 flag(最高)
+#   2. $ANTHROPIC_BASE_URL 自动识别(走各 provider 在自己文件里声明的规则)
+# 三级都没命中 → statusline 不显示配额段。
+#
+# 想临时切换:ANTHROPIC_BASE_URL 改一下,或 `submon statusline --provider kimi`
+# 想看非当前会话的 provider:`submon status kimi` / `submon status opencode`
+#
+# 内建规则不足以覆盖你的私有代理?改 provider 包里对应文件(zhipu.go /
+# minimax.go / opencode.go / kimi.go)的 xxxRules(),不是 config.toml。

@@ -39,6 +39,27 @@ type Zhipu struct {
 
 func (z *Zhipu) Name() model.Provider { return model.ProviderZhipu }
 
+// zhipuRules 是 Zhipu 在内建 URL 检测中的全部声明。provider 文件是"这个
+// provider 长什么样"的唯一真源,检测规则放在这里让加新域名/子域时
+// 只改一个文件。glob 语法见 provider.Rule 文档。
+func zhipuRules() []Rule {
+	return []Rule{
+		// 智谱 bigmodel.cn (open / dev),裸 host + 子域通吃。
+		{Provider: model.ProviderZhipu, Hosts: []string{
+			"*.bigmodel.cn", "bigmodel.cn",
+		}},
+		// Z.ai 的 anthropic 兼容端点 — 单独一条 + path 前缀,把它的
+		// anthropic-compatible API 与其他 Z.ai 服务区分开。
+		{Provider: model.ProviderZhipu, Hosts: []string{
+			"*.z.ai", "z.ai",
+		}, PathPrefix: "/api/anthropic"},
+		// Z.ai 的其余接口也按 zhipu 走(同一计费账户)。
+		{Provider: model.ProviderZhipu, Hosts: []string{
+			"*.z.ai", "z.ai",
+		}},
+	}
+}
+
 func (z *Zhipu) client() *http.Client {
 	if z.Client != nil {
 		return z.Client
