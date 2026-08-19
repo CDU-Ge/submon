@@ -340,6 +340,49 @@ func authSecretField(name string, cfg *config.Config) string {
 	return ""
 }
 
+// TestReadAuthFieldTTYNonSecret 守住 "kimi / zhipu 的 base_url 字段在
+// TTY 模式下不 panic" 的回归 — 老代码 br 为 nil,base_url 字段
+// 直接 nil deref。本测试通过 pipe fd 模拟 TTY,直接打 readAuthField 的
+// useTerm=true / 非 Secret 分支。
+func TestReadAuthFieldTTYNonSecret(t *testing.T) {
+	// readLineFromFD 单测:pipe 写端塞输入,读端给 readLineFromFD。
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	go func() {
+		defer w.Close()
+		_, _ = w.WriteString("https://api.example.com/v1\n")
+	}()
+	got, err := readLineFromFD(int(r.Fd()))
+	if err != nil {
+		t.Fatalf("readLineFromFD: %v", err)
+	}
+	if got != "https://api.example.com/v1" {
+		t.Errorf("got %q, want https://api.example.com/v1", got)
+	}
+
+	// useTerm=true + 非 Secret + nil br — 老 bug 这里 panic。
+	r2, w2, _ := os.Pipe()
+	defer r2.Close()
+	go func() {
+		defer w2.Close()
+		_, _ = w2.WriteString("base-url-value\n")
+	}()
+	oldStdin := os.Stdin
+	os.Stdin = r2
+	t.Cleanup(func() { os.Stdin = oldStdin })
+
+	v, err := readAuthField(authField{Key: "base_url", Prompt: "url", Secret: false, Required: false}, nil, true)
+	if err != nil {
+		t.Fatalf("readAuthField with useTerm=true / non-Secret: %v", err)
+	}
+	if v != "base-url-value" {
+		t.Errorf("got %q, want base-url-value", v)
+	}
+}
+
 // readRawConfig 直接读磁盘 config.toml,用于"不能泄漏明文"的硬断言。
 func readRawConfig(t *testing.T) (string, error) {
 	t.Helper()

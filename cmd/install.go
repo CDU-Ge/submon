@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -32,8 +33,11 @@ var installCmd = &cobra.Command{
 		"  submon install              安装并启用\n" +
 		"  submon install --print      只预览生成的单元,不写入\n" +
 		"  submon install --uninstall  停止、禁用并删除单元\n\n" +
+		"子命令:\n" +
+		"  submon install claude       写 ~/.claude/settings.json 把状态栏接上\n" +
+		"                              Claude Code(独立于 systemd timer)\n\n" +
 		"环境变量凭据(ANTHROPIC_AUTH_TOKEN 等)不会写入 unit 文件 —\n" +
-		"请放在 ~/.config/submon/config.toml(submon token set)\n" +
+		"请放在 ~/.config/submon/config.toml(submon auth <provider>)\n" +
 		"或 ~/.config/environment.d/ 中。",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if installUninst {
@@ -75,6 +79,7 @@ var installCmd = &cobra.Command{
 		if !hasSystemdUser() {
 			fmt.Fprintln(cmd.OutOrStderr(), "提示: 未检测到 systemd 用户会话,单元已写入但未启用")
 			fmt.Fprintln(cmd.OutOrStderr(), "稍后手动启用: systemctl --user daemon-reload && systemctl --user enable --now", unitName+".timer")
+			nudgeClaude(cmd)
 			return nil
 		}
 		for _, args := range [][]string{
@@ -88,8 +93,29 @@ var installCmd = &cobra.Command{
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "timer 已启用:", unitName+".timer")
 		fmt.Fprintln(cmd.OutOrStdout(), "调度间隔:", installTimer)
+		nudgeClaude(cmd)
 		return nil
 	},
+}
+
+// nudgeClaude 装完 systemd timer 后提示用户去装 Claude Code 状态栏 —
+// 两者独立,容易遗漏。已装过(settings.json 里已有 statusLine)则跳过。
+func nudgeClaude(cmd *cobra.Command) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+	if err == nil {
+		var m map[string]any
+		if json.Unmarshal(raw, &m) == nil {
+			if _, ok := m["statusLine"]; ok {
+				return
+			}
+		}
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "")
+	fmt.Fprintln(cmd.OutOrStdout(), "提示: 状态栏还没接 Claude Code?跑一次 `submon install claude`")
 }
 
 func uninstallUnits(cmd *cobra.Command) error {

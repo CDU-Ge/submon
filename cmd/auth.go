@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"syscall"
 
 	"github.com/ge/subscription-monitor/internal/config"
 	"github.com/ge/subscription-monitor/internal/secret"
@@ -156,9 +157,11 @@ func runAuthSet(cmd *cobra.Command, name string) error {
 	if !ok {
 		return fmt.Errorf("未知 provider %q (可选: %s)", name, strings.Join(authProviderNames(), " | "))
 	}
-	// 一次性建一个 bufio.Reader 复用 — `bufio.NewReader(os.Stdin)` 每次新建
-	// 会预读 buffer,导致下一次读到 EOF,字段顺序对就丢了。
-	// TTY+Secret 字段走 term.ReadPassword 直读 os.Stdin,绕过 bufio。
+	// 读取策略:
+	//   TTY → 完全不走 bufio(避免 bufio 预读与 term.ReadPassword 抢 fd)。
+	//         Secret 走 term.ReadPassword(无回显),非 Secret 走 syscall.Read
+	//         单字节读直到 \n — 跟 token 字段不共享任何 buffer,顺序无关。
+	//   pipe → 单 bufio.Reader 跨字段复用(每次 NewReader 预读会让下个字段 EOF)。
 	useTerm := !authStdin && term.IsTerminal(int(os.Stdin.Fd()))
 	var br *bufio.Reader
 	if !useTerm {
@@ -237,11 +240,13 @@ func describeBaseURL(v string) string {
 // readAuthField 按字段属性选择输入方式:
 //
 //	Secret + TTY → term.ReadPassword(无回显) 直读 os.Stdin
-//	非 TTY → bufio.Reader (调用方必须复用同一个,见 runAuthSet 注释)
-//	非 Secret → bufio.Reader
+//	非 Secret + TTY → readLineFromFD(单字节读,不预读 buffer)
+//	管道输入 → br.ReadString (调用方必须复用同一个,见 runAuthSet 注释)
 //
-// useTerm 由 runAuthSet 根据 TTY+forceStdin 一次性评估后传入,避免
-// 每次重查且让"secret 字段走 TTY"分支独立于 bufio.Reader。
+// useTerm 由 runAuthSet 根据 TTY+forceStdin 一次性评估后传入,避免每次
+// 重查。"Secret TTY 走 term,非 Secret TTY 走 fd" 的分工避免了 bufio
+// 预读与 term.ReadPassword 抢 fd(老代码 br 为 nil 时 base_url 字段
+// 直接 panic)。
 func readAuthField(f authField, br *bufio.Reader, useTerm bool) (string, error) {
 	if f.Secret && useTerm {
 		fmt.Fprintf(os.Stderr, "%s: ", f.Prompt)
@@ -253,6 +258,9 @@ func readAuthField(f authField, br *bufio.Reader, useTerm bool) (string, error) 
 		return strings.TrimSpace(string(raw)), nil
 	}
 	fmt.Fprintf(os.Stderr, "%s: ", f.Prompt)
+	if useTerm {
+		return readLineFromFD(int(os.Stdin.Fd()))
+	}
 	line, err := br.ReadString('\n')
 	if errors.Is(err, io.EOF) {
 		// 管道里 EOF 之前没有换行也算完整一行。
@@ -262,6 +270,29 @@ func readAuthField(f authField, br *bufio.Reader, useTerm bool) (string, error) 
 		return "", err
 	}
 	return strings.TrimSpace(line), nil
+}
+
+// readLineFromFD 从 fd 单字节读直到 \n — 不经过 bufio,杜绝与 term.ReadPassword
+// 在同一 fd 上抢 buffer。仅 TTY 模式使用。
+func readLineFromFD(fd int) (string, error) {
+	var buf []byte
+	one := make([]byte, 1)
+	for {
+		n, err := syscall.Read(fd, one)
+		if n > 0 {
+			if one[0] == '\n' {
+				return strings.TrimRight(string(buf), "\r"), nil
+			}
+			buf = append(buf, one[0])
+			continue
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return strings.TrimRight(string(buf), "\r"), nil
+			}
+			return "", err
+		}
+	}
 }
 
 // runAuthLs 列出每个 provider 的存储形态(明文 / 已加密 / 未设置),

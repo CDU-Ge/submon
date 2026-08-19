@@ -21,9 +21,10 @@ var (
 var statusCmd = &cobra.Command{
 	Use:   "status [provider]",
 	Short: "查看订阅配额状态",
-	Long: "展示配额面板。默认展示全部 provider:\n" +
-		"有凭据的展示数据,缺凭据的标注原因。\n\n" +
-		"provider: zhipu | minimax | opencode | kimi。省略则展示全部。\n" +
+	Long: "展示配额面板。默认仅展示已配置的 provider(避免噪声):\n" +
+		"想看某个特定 provider,显式写 `submon status <provider>`,未配置\n" +
+		"的会显示原因。\n\n" +
+		"provider: zhipu | minimax | opencode | kimi。省略则仅展示已配置的。\n" +
 		"缓存未过期时直接读缓存;--force 强制刷新并更新缓存。",
 	Args: cobra.MaximumNArgs(1),
 	ValidArgs: func() []string {
@@ -121,8 +122,11 @@ var statusCmd = &cobra.Command{
 	},
 }
 
-// targetProviders 解析目标 provider:显式参数 > 全部。
-// 未配置的也会在输出中标注原因,不再静默跳过。
+// targetProviders 解析目标 provider:显式参数 > 已配置的全部。
+//
+// 不传参时只返回已配置的(避免面板里出现 "kimi 未配置" 这类噪声 — 用户可能
+// 只关心某个优先配额)。传了 provider 名则无脑返回它,未配置的情况交给
+// RunE 在结果处显示原因。
 func targetProviders(args []string, cfg *config.Config) ([]model.Provider, error) {
 	if len(args) == 1 {
 		name := model.Provider(args[0])
@@ -131,7 +135,30 @@ func targetProviders(args []string, cfg *config.Config) ([]model.Provider, error
 		}
 		return []model.Provider{name}, nil
 	}
-	return model.AllProviders(), nil
+	out := make([]model.Provider, 0, len(model.AllProviders()))
+	for _, p := range model.AllProviders() {
+		if providerConfigured(p, cfg) {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// providerConfigured 判断 provider 是否已配 token。BaseURL 是可选的,
+// 不参与。这里 cfg 必须是 loadDecryptedConfig 的产物(encrypted 已展开),
+// 否则 enc:v1:... 会被误判为"已配置"。
+func providerConfigured(p model.Provider, cfg *config.Config) bool {
+	switch p {
+	case model.ProviderZhipu:
+		return cfg.Zhipu.Token != ""
+	case model.ProviderMinimax:
+		return cfg.MiniMax.Token != ""
+	case model.ProviderOpenCode:
+		return cfg.OpenCode.Token != ""
+	case model.ProviderKimi:
+		return cfg.Kimi.Token != ""
+	}
+	return false
 }
 
 func init() {

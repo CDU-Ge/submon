@@ -74,6 +74,7 @@ Claude Code `~/.claude/settings.json` snippet:
     "padding": 0
   }
 }
+```
 
 ### `submon watch`
 
