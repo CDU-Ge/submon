@@ -405,3 +405,136 @@ func TestFlexFloatUnit(t *testing.T) {
 		t.Error("bool should fail")
 	}
 }
+
+// kimiRealAPIPayload 来自 kimi-usage-probe 实跑,2026-08-19 抓取:
+// api.kimi.com/coding/v1/usages 真实响应,数字全是 string、timeUnit 用
+// "TIME_UNIT_MINUTE" 前缀、并附带 user / parallel / totalQuota /
+// authentication / subType / domain 等额外块(Go json 默认忽略未知字段)。
+//
+// 这个 fixture 守住三个回归:
+//  1. flexFloat 必须吃 string
+//  2. kimiWindowLength 必须认 "TIME_UNIT_MINUTE" 前缀(没这条修过的话,
+//     整个 5h 窗口会被丢,只剩 weekly 0%)
+//  3. 额外块不能导致 unmarshal 失败
+const kimiRealAPIPayload = `{
+  "user": {
+    "userId": "d9vh9dnaa0v22ffb9r4g",
+    "region": "REGION_CN",
+    "membership": {"level": "LEVEL_INTERMEDIATE"},
+    "businessId": ""
+  },
+  "usage": {
+    "limit": "100",
+    "used": "100",
+    "resetTime": "2026-08-22T06:27:15.950634Z"
+  },
+  "limits": [
+    {
+      "window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
+      "detail": {
+        "limit": "100",
+        "used": "44",
+        "remaining": "56",
+        "resetTime": "2026-08-19T15:27:15.950634Z"
+      }
+    }
+  ],
+  "parallel": {"limit": "20"},
+  "totalQuota": {},
+  "authentication": {"method": "METHOD_API_KEY", "scope": "FEATURE_CODING"},
+  "subType": "TYPE_PURCHASE",
+  "domain": "DOMAIN_NEXUS"
+}`
+
+// TestKimiFetchRealAPIPayload 是用户报告错误的直接 regression。
+// 不 mock:用真 payload 直接走 Fetch,期望:
+//   - shape B 解析成功(usage → week,limits[0] → 5h)
+//   - short 窗口 56% remaining(关键:kimiWindowLength 要认 TIME_UNIT_MINUTE)
+//   - long 窗口 0% remaining(used == limit)
+//   - 两段都拿到 resetTime(没 timeUnit 解析这一步就崩了)
+func TestKimiFetchRealAPIPayload(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(kimiRealAPIPayload))
+	}))
+	defer srv.Close()
+
+	k := &Kimi{Token: "k", BaseURL: srv.URL}
+	snap, err := k.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("real API payload rejected: %v", err)
+	}
+
+	// 5h:detail.remaining / detail.limit = 56/100 → 56%
+	// 5h:detail.remaining / detail.limit = 56/100 → 56%
+	if snap.ShortWindow == nil {
+		t.Fatal("short window missing — TIME_UNIT_MINUTE 没被认")
+	}
+	if snap.ShortWindow.Label != "5h" {
+		t.Errorf("short label = %q, want 5h", snap.ShortWindow.Label)
+	}
+	if snap.ShortWindow.RemainingPct == nil || !floatNear(*snap.ShortWindow.RemainingPct, 56, 0.001) {
+		t.Errorf("short remaining = %v, want 56", snap.ShortWindow.RemainingPct)
+	}
+	if snap.ShortWindow.ResetAt == nil {
+		t.Error("short ResetAt missing — detail.resetTime 没传到 window")
+	}
+
+	// week:usage.used == usage.limit → 0%
+	if snap.LongWindow == nil {
+		t.Fatal("long window missing")
+	}
+	if snap.LongWindow.Label != "week" {
+		t.Errorf("long label = %q, want week", snap.LongWindow.Label)
+	}
+	if snap.LongWindow.RemainingPct == nil || !floatNear(*snap.LongWindow.RemainingPct, 0, 0.001) {
+		t.Errorf("long remaining = %v, want 0 (used==limit)", snap.LongWindow.RemainingPct)
+	}
+	if snap.LongWindow.ResetAt == nil {
+		t.Error("long ResetAt missing — usage.resetTime 没被解析")
+	}
+}
+
+// floatNear 容忍 float64 路径里的精度抖动(56/100*100 = 56.00000000000001)。
+func floatNear(a, b, tol float64) bool {
+	d := a - b
+	if d < 0 {
+		d = -d
+	}
+	return d <= tol
+}
+
+// TestKimiWindowLengthUnits 单独守住 enum 字符串解析,与真 payload 解耦。
+func TestKimiWindowLengthUnits(t *testing.T) {
+	mk := func(d *flexFloat, u string) kimiWindowSpec {
+		return kimiWindowSpec{Duration: d, TimeUnit: u}
+	}
+	d := flexFloat(5)
+	cases := []struct {
+		unit string
+		want time.Duration
+		ok   bool
+	}{
+		{"TIME_UNIT_MINUTE", 5 * time.Minute, true},
+		{"TIME_UNIT_HOUR", 5 * time.Hour, true},
+		{"TIME_UNIT_DAY", 5 * 24 * time.Hour, true},
+		{"TIME_UNIT_WEEK", 5 * 7 * 24 * time.Hour, true},
+		{"TIME_UNIT_MONTH", 5 * 30 * 24 * time.Hour, true},
+		// 旧 enum / 裸名也认(防止上游换前缀)。
+		{"MINUTE", 5 * time.Minute, true},
+		{"HOUR", 5 * time.Hour, true},
+		{"DAY", 5 * 24 * time.Hour, true},
+		{"WEEK", 5 * 7 * 24 * time.Hour, true},
+		{"MONTH", 5 * 30 * 24 * time.Hour, true},
+		// 大小写不敏感。
+		{"time_unit_minute", 5 * time.Minute, true},
+		{"HOURS", 5 * time.Hour, true},
+		// 未知 enum → ok=false,不静默给一个错误的 length。
+		{"TIME_UNIT_FORTNIGHT", 0, false},
+	}
+	for _, c := range cases {
+		got, ok := kimiWindowLength(mk(&d, c.unit))
+		if ok != c.ok || got != c.want {
+			t.Errorf("%s: got (%v, %v) want (%v, %v)", c.unit, got, ok, c.want, c.ok)
+		}
+	}
+}

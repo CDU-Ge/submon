@@ -142,11 +142,17 @@ type kimiWindowSpec struct {
 }
 
 // kimiWindowDetail is the {used, limit, remaining} block; reset fields ride
-// along on the parent row in shape A.
+// along on the parent row in shape A. The real API also nests resetTime inside
+// the detail (shape B limits[].detail.resetTime), so we keep it here to avoid
+// losing the field — ResetAt would otherwise be nil for short windows in the
+// shape B path.
 type kimiWindowDetail struct {
 	Used      *flexFloat `json:"used"`
 	Limit     *flexFloat `json:"limit"`
 	Remaining *flexFloat `json:"remaining"`
+	ResetTime string     `json:"resetTime,omitempty"`
+	ResetAt   string     `json:"reset_at,omitempty"`
+	ResetIn   *flexFloat `json:"reset_in,omitempty"`
 }
 
 // kimiUsageRow is the unified shape: in shape A it appears directly in
@@ -320,9 +326,17 @@ func parseKimiShapeB(b kimiResponseB, snap *model.Snapshot, warnings *[]string) 
 		if detail == nil {
 			detail = &kimiWindowDetail{Used: r.Used, Limit: r.Limit, Remaining: r.Remaining}
 		}
+		// shape B 的真 API 把 resetTime 嵌在 detail 里(而不是行顶层),先看
+		// detail,再看 row,两条路径都允许。
+		resetTime := firstNonEmpty(detail.ResetTime, r.ResetTime)
+		resetAt := firstNonEmpty(detail.ResetAt, r.ResetAt)
+		resetIn := detail.ResetIn
+		if resetIn == nil {
+			resetIn = r.ResetIn
+		}
 		switch length {
 		case 5 * time.Hour:
-			w := kimiDetailToWindow(*detail, "5h", length, r.ResetTime, r.ResetAt, r.ResetIn)
+			w := kimiDetailToWindow(*detail, "5h", length, resetTime, resetAt, resetIn)
 			if w == nil {
 				continue
 			}
@@ -330,11 +344,11 @@ func parseKimiShapeB(b kimiResponseB, snap *model.Snapshot, warnings *[]string) 
 				shortCandidate = w
 			}
 		case 7 * 24 * time.Hour:
-			if w := kimiDetailToWindow(*detail, "week", length, r.ResetTime, r.ResetAt, r.ResetIn); w != nil {
+			if w := kimiDetailToWindow(*detail, "week", length, resetTime, resetAt, resetIn); w != nil {
 				snap.LongWindow = w
 			}
 		case 30 * 24 * time.Hour:
-			if w := kimiDetailToWindow(*detail, "month", length, r.ResetTime, r.ResetAt, r.ResetIn); w != nil {
+			if w := kimiDetailToWindow(*detail, "month", length, resetTime, resetAt, resetIn); w != nil {
 				snap.MonthlyToolWindow = w
 			}
 		}
@@ -345,26 +359,38 @@ func parseKimiShapeB(b kimiResponseB, snap *model.Snapshot, warnings *[]string) 
 // kimiWindowLength normalizes (duration, timeUnit) to Go duration. MONTH is
 // treated as 30 days for the purpose of StartedAt derivation (rate
 // extrapolation rounds anyway).
+//
+// timeUnit is matched by *suffix* on the bare unit name because the live
+// API returns enum strings prefixed with `TIME_UNIT_`
+// ("TIME_UNIT_MINUTE" / "TIME_UNIT_HOUR" / ...) but the upstream reference
+// uses bare names ("MINUTE" / "HOUR" / ...). New variants like WEEK land
+// in the same way.
 func kimiWindowLength(w kimiWindowSpec) (time.Duration, bool) {
 	if w.Duration == nil {
 		return 0, false
 	}
 	d := float64(*w.Duration)
-	switch strings.ToUpper(w.TimeUnit) {
-	case "MINUTE":
+	unit := strings.ToUpper(w.TimeUnit)
+	unit = strings.TrimPrefix(unit, "TIME_UNIT_")
+	switch unit {
+	case "MINUTE", "MINUTES", "M":
 		return time.Duration(d) * time.Minute, true
-	case "HOUR":
+	case "HOUR", "HOURS", "H":
 		return time.Duration(d) * time.Hour, true
-	case "DAY":
+	case "DAY", "DAYS", "D":
 		return time.Duration(d) * 24 * time.Hour, true
-	case "MONTH":
+	case "WEEK", "WEEKS", "W":
+		return time.Duration(d) * 7 * 24 * time.Hour, true
+	case "MONTH", "MONTHS":
 		return time.Duration(d) * 30 * 24 * time.Hour, true
 	}
 	return 0, false
 }
 
 // kimiRowToWindow converts a shape A row (which may have inline or nested
-// detail) into a model.Window.
+// detail) into a model.Window. Reset fields prefer the row level (shape A
+// convention: resetTime rides on the row) but fall back to the detail block
+// (shape B convention: resetTime is nested inside limits[].detail).
 func kimiRowToWindow(r kimiUsageRow, label string, length time.Duration) *model.Window {
 	detail := r.Detail
 	if detail == nil && (r.Used != nil || r.Limit != nil || r.Remaining != nil) {
@@ -373,7 +399,13 @@ func kimiRowToWindow(r kimiUsageRow, label string, length time.Duration) *model.
 	if detail == nil {
 		return nil
 	}
-	return kimiDetailToWindow(*detail, label, length, r.ResetTime, r.ResetAt, r.ResetIn)
+	resetTime := firstNonEmpty(detail.ResetTime, r.ResetTime)
+	resetAt := firstNonEmpty(detail.ResetAt, r.ResetAt)
+	resetIn := detail.ResetIn
+	if resetIn == nil {
+		resetIn = r.ResetIn
+	}
+	return kimiDetailToWindow(*detail, label, length, resetTime, resetAt, resetIn)
 }
 
 // kimiDetailToWindow builds a model.Window from a {used, limit, remaining}
