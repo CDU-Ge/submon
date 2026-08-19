@@ -182,3 +182,124 @@ func TestModelProviderDetection(t *testing.T) {
 		}
 	}
 }
+
+func TestPeakHourReminder(t *testing.T) {
+	cfg := config.Default()
+
+	// bind/unbind the package-level --provider flag so resolveStatuslineProvider
+	// 走我们想要的分支,而不是测试环境里的 ANTHROPIC_BASE_URL/config 兜底。
+	orig := statuslineProvider
+	defer func() { statuslineProvider = orig }()
+
+	// 1. 非 Zhipu:空(其他 provider 不打提醒,这是契约)。
+	statuslineProvider = "minimax"
+	if got := peakHourReminder(cfg, time.Now()); got != "" {
+		t.Errorf("non-Zhipu should be empty, got %q", got)
+	}
+	statuslineProvider = "opencode"
+	if got := peakHourReminder(cfg, time.Now()); got != "" {
+		t.Errorf("non-Zhipu should be empty, got %q", got)
+	}
+
+	// 后续用例全部用 Zhipu。
+	statuslineProvider = "zhipu"
+
+	// 锚定 2024-01-15 为周一(2024-01-01 是周一,14 天后同是周一;
+	// 13/14 分别落在周六/周日)。先断言这条假设,免得测试默默过期。
+	mon := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
+	if mon.Weekday() != time.Monday {
+		t.Fatalf("assumption broken: 2024-01-15 is %v, want Monday", mon.Weekday())
+	}
+
+	utc := func(ymdHM string) time.Time {
+		parsed, err := time.Parse("2006-01-02 15:04", ymdHM)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return parsed.UTC()
+	}
+
+	// 高峰期 = 周一至周五 14:00-18:00 (UTC+8,Asia/Shanghai)。
+	// 期望:窗口外空、窗口内 "高峰 Xh Ym",剩余 < 30min 转红。
+
+	cases := []struct {
+		name      string
+		utcTime   string
+		wantEmpty bool
+		wantColor string // "" = 不检查
+	}{
+		// 周六/周日 同时间点:窗口外。
+		{"周六 07:00 UTC", utc("2024-01-13 07:00").Format("2006-01-02 15:04"), true, ""},
+		{"周日 07:00 UTC", utc("2024-01-14 07:00").Format("2006-01-02 15:04"), true, ""},
+		// 周一:边界与窗口行为。
+		{"周一 13:00 CST (05:00 UTC,高峰前)", utc("2024-01-15 05:00").Format("2006-01-02 15:04"), true, ""},
+		{"周一 14:00 CST (06:00 UTC,刚进高峰)", utc("2024-01-15 06:00").Format("2006-01-02 15:04"), false, ansiYellow},
+		{"周一 15:00 CST (07:00 UTC,过半)", utc("2024-01-15 07:00").Format("2006-01-02 15:04"), false, ansiYellow},
+		{"周一 17:31 CST (09:31 UTC,剩 29min)", utc("2024-01-15 09:31").Format("2006-01-02 15:04"), false, ansiRed},
+		{"周一 18:00 CST (10:00 UTC,刚出高峰)", utc("2024-01-15 10:00").Format("2006-01-02 15:04"), true, ""},
+		{"周一 19:00 CST (11:00 UTC,高峰后)", utc("2024-01-15 11:00").Format("2006-01-02 15:04"), true, ""},
+		// 周二至周五 同样规则。
+		{"周三 15:00 CST (07:00 UTC)", utc("2024-01-17 07:00").Format("2006-01-02 15:04"), false, ansiYellow},
+		{"周五 15:00 CST (07:00 UTC)", utc("2024-01-19 07:00").Format("2006-01-02 15:04"), false, ansiYellow},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tt, err := time.Parse("2006-01-02 15:04", c.utcTime)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := peakHourReminder(cfg, tt)
+			if c.wantEmpty {
+				if got != "" {
+					t.Errorf("want empty, got %q", got)
+				}
+				return
+			}
+			if !strings.Contains(got, "高峰") {
+				t.Errorf("want 含 '高峰', got %q", got)
+			}
+			if c.wantColor != "" && !strings.Contains(got, c.wantColor) {
+				t.Errorf("want color %q, got %q", c.wantColor, got)
+			}
+		})
+	}
+}
+
+// TestPeakHourReminderLayoutIntegration 验证三套排版都会拼接 peakHourReminder。
+// 用真实的 renderStatusline 路径,固定 cfg.Statusline.Layout 驱动排版选择。
+// 走 statuslineProvider="zhipu" 路径,避免被测试环境的 ANTHROPIC_BASE_URL
+// 干扰(那个会指向 MINIMAX,真实缓存里也只有 MINIMAX 数据)。
+func TestPeakHourReminderLayoutIntegration(t *testing.T) {
+	cfg := config.Default()
+	orig := statuslineProvider
+	defer func() { statuslineProvider = orig }()
+	statuslineProvider = "zhipu"
+
+	// 周一 15:00 CST = 07:00 UTC(高峰内)。
+	tt := time.Date(2024, 1, 15, 7, 0, 0, 0, time.UTC)
+	in := &statuslineInput{}
+
+	for _, layout := range []string{"a", "b", "c"} {
+		t.Run("layout="+layout, func(t *testing.T) {
+			cfg.Statusline.Layout = layout
+			line := renderStatusline(in, cfg, tt)
+			if !strings.Contains(line, "高峰") {
+				t.Errorf("layout %s should embed 高峰 reminder, got %s", layout, line)
+			}
+		})
+	}
+
+	// 周末同一时间:三套排版都不应出现 "高峰"。
+	cfg.Statusline.Layout = "a"
+	ttWeekend := time.Date(2024, 1, 13, 7, 0, 0, 0, time.UTC)
+	if line := renderStatusline(in, cfg, ttWeekend); strings.Contains(line, "高峰") {
+		t.Errorf("weekend should not embed 高峰 reminder, got %s", line)
+	}
+
+	// 切到 MINIMAX 后:三套排版都不应出现 "高峰"(其他 provider 无特别要求)。
+	statuslineProvider = "minimax"
+	cfg.Statusline.Layout = "a"
+	if line := renderStatusline(in, cfg, tt); strings.Contains(line, "高峰") {
+		t.Errorf("non-Zhipu should not embed 高峰 reminder, got %s", line)
+	}
+}

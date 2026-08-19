@@ -222,6 +222,43 @@ func quotaWindowSegs(cfg *config.Config, modelProv model.Provider, now time.Time
 	return segs
 }
 
+// peakHourReminder Zhipu 高峰期提醒。
+//
+// 高峰期:周一至周五 14:00-18:00 (UTC+8,Asia/Shanghai 标准时)。
+// 仅在窗口内显示,窗口外或非 Zhipu provider 返回空——
+// 状态栏每帧渲染,常驻信息会让真正紧急的提醒失去注意力。
+//
+// 颜色:剩余 < 30min 转红(收尾期),其他黄色(高峰期进行中);
+// 标签 "高峰" 用白色(辅助信息,不动色,沿用 ansiWhite 约定)。
+func peakHourReminder(cfg *config.Config, now time.Time) string {
+	name, err := resolveStatuslineProvider(cfg)
+	if err != nil || name != model.ProviderZhipu {
+		return ""
+	}
+	const cstOff = 8 * 3600
+	cst := time.FixedZone("CST", cstOff)
+	local := now.In(cst)
+	wd := local.Weekday()
+	if wd < time.Monday || wd > time.Friday {
+		return ""
+	}
+	hour := local.Hour()
+	if hour < 14 || hour >= 18 {
+		return ""
+	}
+	endAt := time.Date(local.Year(), local.Month(), local.Day(), 18, 0, 0, 0, cst)
+	// 关键:用入参 now 算差,不是 time.Until()(后者读真实时钟,测试与自愈节流都错位)。
+	remaining := endAt.Sub(now)
+	if remaining < 0 {
+		remaining = 0
+	}
+	color := ansiYellow
+	if remaining < 30*time.Minute {
+		color = ansiRed
+	}
+	return fmt.Sprintf("%s高峰%s %s%s%s", ansiWhite, ansiReset, color, humanDuration(remaining), ansiReset)
+}
+
 // freshTrailer: 新鲜度尾标(极简方案用)。
 func freshTrailer(cfg *config.Config, now time.Time) string {
 	name, err := resolveStatuslineProvider(cfg)
@@ -343,6 +380,11 @@ func renderLayoutA(in *statuslineInput, cfg *config.Config, modelName, dir, cwd 
 		segs = append(segs, q)
 	}
 
+	// 6. 高峰期提醒(Zhipu 专属,窗口内显示)。
+	if ph := peakHourReminder(cfg, now); ph != "" {
+		segs = append(segs, ph)
+	}
+
 	// 单空格分隔:视觉整齐,不让分隔符抢色。
 	return strings.Join(segs, " ")
 }
@@ -455,6 +497,9 @@ func renderLayoutB(in *statuslineInput, cfg *config.Config, modelName, dir, cwd 
 	if q := quotaDetailedSegment(cfg, in.modelProvider(), now); q != "" {
 		segs = append(segs, q)
 	}
+	if ph := peakHourReminder(cfg, now); ph != "" {
+		segs = append(segs, ph)
+	}
 	sep := ansiWhite + " · " + ansiReset
 	return strings.Join(segs, sep)
 }
@@ -491,6 +536,9 @@ func renderLayoutC(in *statuslineInput, cfg *config.Config, modelName, dir, cwd 
 	}
 	if q := quotaMinimalSegment(cfg, in.modelProvider(), now); q != "" {
 		segs = append(segs, q)
+	}
+	if ph := peakHourReminder(cfg, now); ph != "" {
+		segs = append(segs, ph)
 	}
 	sep := ansiWhite + " · " + ansiReset
 	return strings.Join(segs, sep)
