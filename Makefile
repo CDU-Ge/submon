@@ -47,3 +47,6 @@ dist/$(BINARY)-darwin_arm64:
 	GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "$(LDFLAGS)" -o $@ .
 
 .PHONY: release
+
+deploy-%: install
+	rsync -avz --progress ~/.local/bin/submon $*:~/.local/bin/submon
