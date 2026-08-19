@@ -11,11 +11,12 @@ const (
 	ProviderZhipu    Provider = "zhipu"
 	ProviderMinimax  Provider = "minimax"
 	ProviderOpenCode Provider = "opencode"
+	ProviderKimi     Provider = "kimi"
 )
 
 // AllProviders 列出全部已知 provider(展示顺序)。
 func AllProviders() []Provider {
-	return []Provider{ProviderZhipu, ProviderMinimax, ProviderOpenCode}
+	return []Provider{ProviderZhipu, ProviderMinimax, ProviderOpenCode, ProviderKimi}
 }
 
 // ValidProvider 报告 p 是否为已知 provider。

@@ -24,6 +24,10 @@ type Config struct {
 	OpenCode struct {
 		Token string `toml:"token"`
 	} `toml:"opencode"`
+	Kimi struct {
+		BaseURL string `toml:"base_url"`
+		Token   string `toml:"token"`
+	} `toml:"kimi"`
 	Cache struct {
 		// TTLSeconds is how long a fetched snapshot is served from cache.
 		// Default 300 (5 min).
@@ -212,7 +216,7 @@ func envOr(key, fallback string) string {
 // pass through. Returns the first decryption error encountered (fields stay
 // as-is when decryption fails).
 func (c *Config) DecryptSecrets() error {
-	fields := []*string{&c.Zhipu.Token, &c.MiniMax.Token, &c.OpenCode.Token, &c.Notify.Gotify.AppToken}
+	fields := []*string{&c.Zhipu.Token, &c.MiniMax.Token, &c.OpenCode.Token, &c.Kimi.Token, &c.Notify.Gotify.AppToken}
 	var firstErr error
 	for _, f := range fields {
 		v := *f

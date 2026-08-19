@@ -66,7 +66,7 @@ type statuslineInput struct {
 
 // modelProvider guesses which subscription the session's model belongs to:
 // glm/zhipu names → zhipu, minimax names → minimax, opencode names → opencode,
-// else unknown.
+// kimi names → kimi, else unknown.
 func (in *statuslineInput) modelProvider() model.Provider {
 	name := strings.ToLower(in.Model.ID + " " + in.Model.Display)
 	switch {
@@ -76,6 +76,8 @@ func (in *statuslineInput) modelProvider() model.Provider {
 		return model.ProviderMinimax
 	case strings.Contains(name, "opencode"):
 		return model.ProviderOpenCode
+	case strings.Contains(name, "kimi"), strings.Contains(name, "moonshot"):
+		return model.ProviderKimi
 	}
 	return ""
 }
@@ -777,7 +779,7 @@ func maybeSelfHeal(cachePath string, entry *cache.Entry, cfg *config.Config, now
 		return
 	}
 	// 先落 RefreshedAt(尽力而为),再 fork 静默刷新进程。
-	if entry != nil {
+	if entry != nil && entry.Snapshot != nil {
 		entry.RefreshedAt = now
 		if f, err := cache.New(cachePath).Load(); err == nil {
 			if e := f.Get(entry.Snapshot.Provider); e != nil {
@@ -810,6 +812,8 @@ func providerBadge(p model.Provider) string {
 		return ansiYellow + label + ansiReset
 	case model.ProviderOpenCode:
 		return ansiMagenta + label + ansiReset
+	case model.ProviderKimi:
+		return ansiBlue + label + ansiReset
 	}
 	return label
 }
@@ -892,6 +896,6 @@ func stripANSI(s string) string {
 }
 
 func init() {
-	statuslineCmd.Flags().StringVar(&statuslineProvider, "provider", "", "要展示的 provider(zhipu|minimax|opencode)")
+	statuslineCmd.Flags().StringVar(&statuslineProvider, "provider", "", "要展示的 provider(zhipu|minimax|opencode|kimi)")
 	rootCmd.AddCommand(statuslineCmd)
 }

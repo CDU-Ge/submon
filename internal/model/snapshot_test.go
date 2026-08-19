@@ -56,7 +56,7 @@ func ptr(v float64) *float64 { return &v }
 
 func TestAllProvidersIncludesOpenCode(t *testing.T) {
 	all := AllProviders()
-	want := []Provider{ProviderZhipu, ProviderMinimax, ProviderOpenCode}
+	want := []Provider{ProviderZhipu, ProviderMinimax, ProviderOpenCode, ProviderKimi}
 	if len(all) != len(want) {
 		t.Fatalf("AllProviders() = %v", all)
 	}

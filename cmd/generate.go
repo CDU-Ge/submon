@@ -62,6 +62,7 @@ var generateConfigCmd = &cobra.Command{
 		cfg.Zhipu.Token = migrate("zhipu.token", cfg.Zhipu.Token)
 		cfg.MiniMax.Token = migrate("minimax.token", cfg.MiniMax.Token)
 		cfg.OpenCode.Token = migrate("opencode.token", cfg.OpenCode.Token)
+		cfg.Kimi.Token = migrate("kimi.token", cfg.Kimi.Token)
 		cfg.Notify.Gotify.AppToken = migrate("gotify.app_token", cfg.Notify.Gotify.AppToken)
 
 		var buf bytes.Buffer

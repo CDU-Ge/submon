@@ -16,6 +16,7 @@ const DefaultZhipuBaseURL = "https://open.bigmodel.cn/api/anthropic"
 //	zhipu:    ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL > [zhipu] token/base_url > 默认基址
 //	minimax:  MINIMAX_TOKEN > [minimax] token
 //	opencode: OPENCODE_API_KEY > [opencode] token
+//	kimi:     KIMI_CODING_API_KEY / KIMI_API_KEY > [kimi] token > 默认基址
 //
 // 调用方需传入已解密的配置(Config.DecryptSecrets)。
 func Build(name model.Provider, cfg *config.Config) (Source, error) {
@@ -31,6 +32,10 @@ func Build(name model.Provider, cfg *config.Config) (Source, error) {
 	case model.ProviderOpenCode:
 		token := firstNonEmpty(os.Getenv("OPENCODE_API_KEY"), cfg.OpenCode.Token)
 		return &OpenCode{Token: token}, nil
+	case model.ProviderKimi:
+		baseURL := firstNonEmpty(cfg.Kimi.BaseURL, DefaultKimiBaseURL)
+		token := firstNonEmpty(os.Getenv("KIMI_CODING_API_KEY"), os.Getenv("KIMI_API_KEY"), cfg.Kimi.Token)
+		return &Kimi{Token: token, BaseURL: baseURL}, nil
 	}
 	return nil, &ErrNotConfigured{Reason: "未知 provider: " + string(name)}
 }

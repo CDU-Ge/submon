@@ -34,6 +34,8 @@ func DetectFromBaseURL(baseURL string) (model.Provider, error) {
 		return model.ProviderMinimax, nil
 	case strings.Contains(baseURL, "opencode"):
 		return model.ProviderOpenCode, nil
+	case strings.Contains(baseURL, "kimi.com"), strings.Contains(baseURL, "moonshot"):
+		return model.ProviderKimi, nil
 	}
 	return "", fmt.Errorf("cannot detect provider from base URL %q", baseURL)
 }

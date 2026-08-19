@@ -295,11 +295,13 @@ func windowDetail(snap *model.Snapshot, now time.Time) string {
 
 // providerCN 中文 provider 名。
 func providerCN(name model.Provider) string {
-	if name == model.ProviderZhipu {
+	switch name {
+	case model.ProviderZhipu:
 		return "智谱"
-	}
-	if name == model.ProviderOpenCode {
+	case model.ProviderOpenCode:
 		return "OpenCode"
+	case model.ProviderKimi:
+		return "Kimi"
 	}
 	return "MiniMax"
 }

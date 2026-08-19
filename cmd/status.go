@@ -23,7 +23,7 @@ var statusCmd = &cobra.Command{
 	Short: "查看订阅配额状态",
 	Long: "展示配额面板。默认展示全部 provider:\n" +
 		"有凭据的展示数据,缺凭据的标注原因。\n\n" +
-		"provider: zhipu | minimax | opencode。省略则展示全部。\n" +
+		"provider: zhipu | minimax | opencode | kimi。省略则展示全部。\n" +
 		"缓存未过期时直接读缓存;--force 强制刷新并更新缓存。",
 	Args: cobra.MaximumNArgs(1),
 	ValidArgs: func() []string {
@@ -127,7 +127,7 @@ func targetProviders(args []string, cfg *config.Config) ([]model.Provider, error
 	if len(args) == 1 {
 		name := model.Provider(args[0])
 		if !model.ValidProvider(name) {
-			return nil, fmt.Errorf("未知 provider %q(zhipu|minimax|opencode)", args[0])
+			return nil, fmt.Errorf("未知 provider %q(zhipu|minimax|opencode|kimi)", args[0])
 		}
 		return []model.Provider{name}, nil
 	}

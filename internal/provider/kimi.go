@@ -1,0 +1,416 @@
+package provider
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/ge/subscription-monitor/internal/model"
+)
+
+// Kimi queries kimi.com Coding Plan usage.
+//
+// Endpoints (auth: Bearer KIMI_CODING_API_KEY, User-Agent: KimiCLI/1.6):
+//
+//	GET {base}/usages   (primary)
+//	GET {base}/usage    (404 fallback, mirroring the upstream reference)
+//
+// Default base URL: https://api.kimi.com/coding/v1
+//
+// Two payload shapes (informal field semantics from upstream tool):
+//
+//	Shape A (preferred):
+//	  {
+//	    "data": [
+//	      {"model_name": "all", "used": N, "limit": M, "remaining": R, "resetTime": "..."},
+//	      {"model_name": "kimi-k2", "window": {"duration": 5, "timeUnit": "HOUR"}, "used": ..., "limit": ...},
+//	      ...
+//	    ]
+//	  }
+//
+//	Shape B (fallback):
+//	  {
+//	    "usage": {"used": ..., "limit": ..., "remaining": ..., "resetTime": "..."},
+//	    "limits": [
+//	      {"window": {"duration": 5, "timeUnit": "HOUR"},
+//	       "detail": {"used": ..., "limit": ..., "remaining": ...}},
+//	      ...
+//	    ]
+//	  }
+//
+// Window classification (duration + timeUnit):
+//
+//	5 HOUR  → ShortWindow (5h); if multiple model rows, take LOWEST remaining%.
+//	7 DAY   → LongWindow (week); also shape A's "all" row and shape B's "usage".
+//	30 DAY / 1 MONTH → MonthlyToolWindow (WebBridge optional monthly credits).
+//
+// The "percent" presented upstream is *used* percent; we normalize to remaining
+// (consistent with zhipu/opencode conventions).
+type Kimi struct {
+	// Token is the Bearer credential (KIMI_CODING_API_KEY).
+	Token string
+	// BaseURL overrides the API origin (tests; default DefaultKimiBaseURL).
+	BaseURL string
+	// Client overrides the HTTP client (tests). Nil uses a 10s-timeout default.
+	Client *http.Client
+}
+
+func (k *Kimi) Name() model.Provider { return model.ProviderKimi }
+
+const DefaultKimiBaseURL = "https://api.kimi.com/coding/v1"
+
+func (k *Kimi) client() *http.Client {
+	if k.Client != nil {
+		return k.Client
+	}
+	return &http.Client{Timeout: 10 * time.Second}
+}
+
+func (k *Kimi) baseURL() string {
+	if k.BaseURL != "" {
+		return k.BaseURL
+	}
+	return DefaultKimiBaseURL
+}
+
+func (k *Kimi) resolveToken() (string, error) {
+	if k.Token != "" {
+		return k.Token, nil
+	}
+	if v := os.Getenv("KIMI_CODING_API_KEY"); v != "" {
+		return v, nil
+	}
+	if v := os.Getenv("KIMI_API_KEY"); v != "" {
+		return v, nil
+	}
+	return "", &ErrNotConfigured{Reason: "缺少 kimi token:设置 KIMI_CODING_API_KEY/KIMI_API_KEY 或配置 [kimi] token"}
+}
+
+// httpStatusError lets the caller distinguish 404 (trigger fallback) from
+// other failures without leaking the upstream raw body shape.
+type httpStatusError struct {
+	Code int
+	Body string
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("HTTP %d: %.200s", e.Code, e.Body)
+}
+
+// kimiWindowSpec describes a window's length; duration+timeUnit lets us
+// normalize to Go duration.
+type kimiWindowSpec struct {
+	Duration *float64 `json:"duration"`
+	TimeUnit string   `json:"timeUnit"`
+}
+
+// kimiWindowDetail is the {used, limit, remaining} block; reset fields ride
+// along on the parent row in shape A.
+type kimiWindowDetail struct {
+	Used      *float64 `json:"used"`
+	Limit     *float64 `json:"limit"`
+	Remaining *float64 `json:"remaining"`
+}
+
+// kimiUsageRow is the unified shape: in shape A it appears directly in
+// `data[]`, with detail fields flat on the row; in shape B it appears in
+// `limits[]`, with detail nested under `detail`.
+type kimiUsageRow struct {
+	ModelName string            `json:"model_name"`
+	Name      string            `json:"name"`
+	Window    *kimiWindowSpec   `json:"window,omitempty"`
+	Detail    *kimiWindowDetail `json:"detail,omitempty"`
+	// shape A inline fields; shape B omits these (uses Detail).
+	Used      *float64 `json:"used,omitempty"`
+	Limit     *float64 `json:"limit,omitempty"`
+	Remaining *float64 `json:"remaining,omitempty"`
+	// Reset hints (any of these can be missing):
+	ResetTime string   `json:"resetTime,omitempty"`
+	ResetAt   string   `json:"reset_at,omitempty"`
+	ResetIn   *float64 `json:"reset_in,omitempty"`
+}
+
+type kimiResponseA struct {
+	Data []kimiUsageRow `json:"data"`
+}
+
+type kimiResponseB struct {
+	Usage  *kimiUsageRow  `json:"usage"`
+	Limits []kimiUsageRow `json:"limits"`
+}
+
+func (k *Kimi) Fetch(ctx context.Context) (*model.Snapshot, error) {
+	token, err := k.resolveToken()
+	if err != nil {
+		return nil, err
+	}
+
+	body, err := k.getWithFallback(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+
+	snap := &model.Snapshot{Provider: model.ProviderKimi, FetchedAt: time.Now()}
+	var warnings []string
+
+	// Shape A first: row array. The "data" key always exists even when empty,
+	// so we use the row count as the discriminating signal.
+	var shapeA kimiResponseA
+	if err := json.Unmarshal(body, &shapeA); err == nil && len(shapeA.Data) > 0 {
+		parseKimiShapeA(shapeA.Data, snap, &warnings)
+	} else {
+		// Shape B fallback.
+		var shapeB kimiResponseB
+		if err := json.Unmarshal(body, &shapeB); err != nil {
+			return nil, fmt.Errorf("usage: %w", err)
+		}
+		if shapeB.Usage == nil && len(shapeB.Limits) == 0 {
+			return nil, fmt.Errorf("usage: empty payload")
+		}
+		parseKimiShapeB(shapeB, snap, &warnings)
+	}
+
+	if snap.ShortWindow == nil {
+		warnings = append(warnings, "no 5h window (duration=5 timeUnit=HOUR) in response")
+	}
+	if snap.LongWindow == nil {
+		warnings = append(warnings, "no weekly window (all-row or 7d) in response")
+	}
+	snap.RawWarning = strings.Join(warnings, "; ")
+	return snap, nil
+}
+
+// getWithFallback hits /usages, retries /usage on 404 (mirrors upstream tool).
+func (k *Kimi) getWithFallback(ctx context.Context, token string) ([]byte, error) {
+	if body, err := k.doRequest(ctx, token, "/usages"); err == nil {
+		return body, nil
+	} else if !isHTTPNotFound(err) {
+		return nil, err
+	}
+	return k.doRequest(ctx, token, "/usage")
+}
+
+func (k *Kimi) doRequest(ctx context.Context, token, path string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, k.baseURL()+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("User-Agent", "KimiCLI/1.6")
+	req.Header.Set("Accept", "application/json")
+	resp, err := k.client().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, &httpStatusError{Code: resp.StatusCode, Body: string(body)}
+	}
+	return body, nil
+}
+
+func isHTTPNotFound(err error) bool {
+	var hs *httpStatusError
+	if errors.As(err, &hs) {
+		return hs.Code == http.StatusNotFound
+	}
+	return false
+}
+
+// parseKimiShapeA: "all" row (no window) is the weekly aggregate; per-model
+// rows with a window are classified by duration. For 5h windows across
+// multiple models, take the LOWEST remaining% (most constrained view).
+func parseKimiShapeA(rows []kimiUsageRow, snap *model.Snapshot, warnings *[]string) {
+	var shortCandidate *model.Window
+	for _, r := range rows {
+		if r.ModelName == "all" || r.Window == nil {
+			if w := kimiRowToWindow(r, "week", 7*24*time.Hour); w != nil {
+				snap.LongWindow = w
+			}
+			continue
+		}
+		length, ok := kimiWindowLength(*r.Window)
+		if !ok {
+			*warnings = append(*warnings, fmt.Sprintf("unknown window %s/%v", r.Window.TimeUnit, derefFloat(r.Window.Duration)))
+			continue
+		}
+		switch length {
+		case 5 * time.Hour:
+			w := kimiRowToWindow(r, "5h", length)
+			if w == nil {
+				continue
+			}
+			if shortCandidate == nil || *w.RemainingPct < *shortCandidate.RemainingPct {
+				shortCandidate = w
+			}
+		case 7 * 24 * time.Hour:
+			if w := kimiRowToWindow(r, "week", length); w != nil {
+				snap.LongWindow = w
+			}
+		case 30 * 24 * time.Hour:
+			if w := kimiRowToWindow(r, "month", length); w != nil {
+				snap.MonthlyToolWindow = w
+			}
+		}
+	}
+	snap.ShortWindow = shortCandidate
+}
+
+// parseKimiShapeB: "usage" object is the weekly aggregate; "limits" array is
+// classified by window length.
+func parseKimiShapeB(b kimiResponseB, snap *model.Snapshot, warnings *[]string) {
+	if b.Usage != nil {
+		if w := kimiRowToWindow(*b.Usage, "week", 7*24*time.Hour); w != nil {
+			snap.LongWindow = w
+		}
+	}
+
+	var shortCandidate *model.Window
+	for _, r := range b.Limits {
+		if r.Window == nil {
+			continue
+		}
+		length, ok := kimiWindowLength(*r.Window)
+		if !ok {
+			*warnings = append(*warnings, fmt.Sprintf("unknown window %s/%v", r.Window.TimeUnit, derefFloat(r.Window.Duration)))
+			continue
+		}
+		detail := r.Detail
+		if detail == nil {
+			detail = &kimiWindowDetail{Used: r.Used, Limit: r.Limit, Remaining: r.Remaining}
+		}
+		switch length {
+		case 5 * time.Hour:
+			w := kimiDetailToWindow(*detail, "5h", length, r.ResetTime, r.ResetAt, r.ResetIn)
+			if w == nil {
+				continue
+			}
+			if shortCandidate == nil || *w.RemainingPct < *shortCandidate.RemainingPct {
+				shortCandidate = w
+			}
+		case 7 * 24 * time.Hour:
+			if w := kimiDetailToWindow(*detail, "week", length, r.ResetTime, r.ResetAt, r.ResetIn); w != nil {
+				snap.LongWindow = w
+			}
+		case 30 * 24 * time.Hour:
+			if w := kimiDetailToWindow(*detail, "month", length, r.ResetTime, r.ResetAt, r.ResetIn); w != nil {
+				snap.MonthlyToolWindow = w
+			}
+		}
+	}
+	snap.ShortWindow = shortCandidate
+}
+
+// kimiWindowLength normalizes (duration, timeUnit) to Go duration. MONTH is
+// treated as 30 days for the purpose of StartedAt derivation (rate
+// extrapolation rounds anyway).
+func kimiWindowLength(w kimiWindowSpec) (time.Duration, bool) {
+	if w.Duration == nil {
+		return 0, false
+	}
+	d := *w.Duration
+	switch strings.ToUpper(w.TimeUnit) {
+	case "MINUTE":
+		return time.Duration(d) * time.Minute, true
+	case "HOUR":
+		return time.Duration(d) * time.Hour, true
+	case "DAY":
+		return time.Duration(d) * 24 * time.Hour, true
+	case "MONTH":
+		return time.Duration(d) * 30 * 24 * time.Hour, true
+	}
+	return 0, false
+}
+
+// kimiRowToWindow converts a shape A row (which may have inline or nested
+// detail) into a model.Window.
+func kimiRowToWindow(r kimiUsageRow, label string, length time.Duration) *model.Window {
+	detail := r.Detail
+	if detail == nil && (r.Used != nil || r.Limit != nil || r.Remaining != nil) {
+		detail = &kimiWindowDetail{Used: r.Used, Limit: r.Limit, Remaining: r.Remaining}
+	}
+	if detail == nil {
+		return nil
+	}
+	return kimiDetailToWindow(*detail, label, length, r.ResetTime, r.ResetAt, r.ResetIn)
+}
+
+// kimiDetailToWindow builds a model.Window from a {used, limit, remaining}
+// block + reset hints. Length is only used to derive StartedAt (rate
+// extrapolation needs it).
+func kimiDetailToWindow(d kimiWindowDetail, label string, length time.Duration, resetTime, resetAt string, resetIn *float64) *model.Window {
+	pct := remainingFromDetail(d)
+	if pct == nil {
+		return nil
+	}
+	w := &model.Window{Label: label}
+	rem := *pct
+	used := 100 - rem
+	w.UsedPct = &used
+	w.RemainingPct = &rem
+	if length > 0 {
+		if t, ok := kimiResolveReset(resetTime, resetAt, resetIn, time.Now()); ok {
+			reset := t
+			w.ResetAt = &reset
+			st := t.Add(-length)
+			w.StartedAt = &st
+		}
+	}
+	return w
+}
+
+// remainingFromDetail computes remaining% from a {used, limit, remaining}
+// block. The Kimi API reports these as absolute counts (not %), so we
+// derive the ratio from limit/remaining or limit/used. Returns nil when
+// the data is insufficient.
+func remainingFromDetail(d kimiWindowDetail) *float64 {
+	if d.Limit != nil && *d.Limit > 0 {
+		if d.Remaining != nil {
+			v := clampPct((*d.Remaining / *d.Limit) * 100)
+			return &v
+		}
+		if d.Used != nil {
+			v := clampPct((1 - *d.Used / *d.Limit) * 100)
+			return &v
+		}
+	}
+	return nil
+}
+
+// kimiResolveReset tries the three reset sources in order: ISO string
+// (resetTime/reset_at), then numeric seconds-from-now (reset_in). Returns ok
+// false when neither resolves.
+func kimiResolveReset(resetTime, resetAt string, resetIn *float64, now time.Time) (time.Time, bool) {
+	for _, s := range []string{resetTime, resetAt} {
+		if s == "" {
+			continue
+		}
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			return t, true
+		}
+		if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+			return t, true
+		}
+	}
+	if resetIn != nil {
+		return now.Add(time.Duration(*resetIn) * time.Second), true
+	}
+	return time.Time{}, false
+}
+
+func derefFloat(p *float64) float64 {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
