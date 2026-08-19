@@ -16,15 +16,20 @@ import (
 // the secret package). Tokens never appear in plaintext in config.toml.
 var tokenCmd = &cobra.Command{
 	Use:   "token",
-	Short: "管理 provider token(加密存储)",
+	Short: "管理 provider token(加密存储,已弃用 — 推荐 submon auth)",
+	Long: "Deprecated: 推荐使用 `submon auth <provider>`,统一入口不会让 token 落进 shell history。\n" +
+		"本命令保留用于脚本兼容:`submon token get/set/ls/unset <slot>`。",
 }
 
 var tokenStdin bool
 
 // tokenSlots lists settable credential slots. zhipu.base_url stays plain
 // (it's not a secret).
+//
+// Deprecated: 新代码请用 `submon auth <provider>`,统一入口,不会让 token 落
+// 进 shell history。token 子命令保留是为了脚本兼容。
 func tokenSlots() []string {
-	return []string{"zhipu.token", "minimax.token", "opencode.token", "gotify.app_token"}
+	return []string{"zhipu.token", "minimax.token", "opencode.token", "kimi.token", "gotify.app_token"}
 }
 
 func parseSlot(slot string) (get func(*config.Config) string, set func(*config.Config, string), err error) {
@@ -38,6 +43,9 @@ func parseSlot(slot string) (get func(*config.Config) string, set func(*config.C
 	case "opencode.token":
 		return func(c *config.Config) string { return c.OpenCode.Token },
 			func(c *config.Config, v string) { c.OpenCode.Token = v }, nil
+	case "kimi.token":
+		return func(c *config.Config) string { return c.Kimi.Token },
+			func(c *config.Config, v string) { c.Kimi.Token = v }, nil
 	case "gotify.app_token":
 		return func(c *config.Config) string { return c.Notify.Gotify.AppToken },
 			func(c *config.Config, v string) { c.Notify.Gotify.AppToken = v }, nil
@@ -47,9 +55,10 @@ func parseSlot(slot string) (get func(*config.Config) string, set func(*config.C
 
 var tokenSetCmd = &cobra.Command{
 	Use:   "set <slot> [value]",
-	Short: "加密存储一个 token",
-	Long: "Encrypt a token and write it to config.toml as enc:v1:...\n\n" +
-		"Slots: zhipu.token, minimax.token, gotify.app_token\n\n" +
+	Short: "加密存储一个 token(已弃用 — 推荐 submon auth)",
+	Long: "Deprecated: 新代码请用 `submon auth <provider>`,统一入口从 stdin 读,避开 shell history。\n\n" +
+		"Encrypt a token and write it to config.toml as enc:v1:...\n\n" +
+		"Slots: zhipu.token, minimax.token, opencode.token, kimi.token, gotify.app_token\n\n" +
 		"With no value argument (or value '-') the token is read without echo\n" +
 		"from the terminal, or from stdin when piped.",
 	Args: cobra.RangeArgs(1, 2),

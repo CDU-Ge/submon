@@ -23,9 +23,9 @@ base_url = "https://open.bigmodel.cn/api/anthropic"
 # token = "oc_..."
 
 [kimi]
-# Kimi Coding Plan (https://api.kimi.com/coding/v1). Readable from
-# KIMI_CODING_API_KEY or KIMI_API_KEY environment variables.
-# token = "sk-kimi-..."
+# Kimi Coding Plan (https://api.kimi.com/coding/v1). 推荐用 `submon auth kimi` 配置;
+# 直接编辑本文件需要手动 encrypt(参考其它 provider 行的 enc:v1:... 形态)。
+# `KIMI_CODING_API_KEY` / `KIMI_API_KEY` 环境变量也会被读取。
 
 [cache]
 # Seconds a snapshot stays fresh. statusline reads the cache only; a systemd

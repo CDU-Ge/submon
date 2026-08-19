@@ -40,6 +40,21 @@ watch / status --force                                            └─► watc
 - `cmd/statusline.go`:必须秒回、永不联网、永不 hard-fail。缓存过期时 fork 后台 `watch --quiet` 自愈(下帧生效)。provider 识别:`--provider` > `ANTHROPIC_BASE_URL` 域名 > 配置默认。模型名含 GLM/zhipu/minimax 时省略对应 provider badge(信息冗余)。
 - 凭据解密入口统一是 `cmd/token.go` 的 `loadDecryptedConfig()`(config.Load + DecryptSecrets);generate/ls 等展示存储形态的场景用原始 `config.Load()`。
 
+## 凭据配置(新增)
+
+**统一入口**:`submon auth <provider>` — 配 zhipu/minimax/opencode/kimi/gotify 全部走同一路径。**不要**用 `submon auth <provider> <token>` 这种命令行参数形式(token 会进 shell history)。**不要**用 `submon token set <slot> <value>`(同上,且 token 进了 `~/.bash_history` 之后即使再加密也救不回)。
+
+- `submon auth <provider>` — 走 `<provider>` 注册表,从 stdin 读 token(TTY 时无回显,管道时明文);落盘前 AES-256-GCM 加密
+- `submon auth ls` — 列每个 provider 存储形态(`enc` / `PLAINTEXT` / `-`),永不打印明文
+- `submon auth remove <provider>` — 清空该 provider 的凭据
+- `submon auth check` — 解密+完整性体检,适合 systemd watchdog
+
+注册表是 `cmd/auth.go` 的 `authRegistry`(`authField{Secret, Required}` + `Apply`),新 provider **必须** 在这里登记,不允许在 cmd 层写 `if name == "xxx"` 分支。`cmd/token.go` 保留用于向后兼容,但已 deprecated。
+
+Gotify 走同一安全等级:URL 明文、`app_token` 加密,与 provider 同流程。
+
+测试规范:统一在 `cmd/auth_test.go` 用 `authTestProviders` 表驱动,每个 provider 跑 set/ls/remove/check 四条用例,新增 provider 必须扩同一张表;`TestAuthRegistryCoversAllProviders` 与 `TestAuthRejectsUnknownProvider` 守住"注册表 = 唯一真源"约束。
+
 ## 约定
 
 - 状态栏/终端输出:**禁用 dim 灰色**(可读性),辅助信息用 `ansiWhite`(默认前景色 `\033[0;39m`),彩色只留给语义信息(百分比阈值变色绿/黄/红)。
