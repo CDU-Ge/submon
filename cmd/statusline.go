@@ -64,24 +64,6 @@ type statuslineInput struct {
 	} `json:"effort"`
 }
 
-// modelProvider guesses which subscription the session's model belongs to:
-// glm/zhipu names → zhipu, minimax names → minimax, opencode names → opencode,
-// kimi names → kimi, else unknown.
-func (in *statuslineInput) modelProvider() model.Provider {
-	name := strings.ToLower(in.Model.ID + " " + in.Model.Display)
-	switch {
-	case strings.Contains(name, "glm"), strings.Contains(name, "zhipu"):
-		return model.ProviderZhipu
-	case strings.Contains(name, "minimax"):
-		return model.ProviderMinimax
-	case strings.Contains(name, "opencode"):
-		return model.ProviderOpenCode
-	case strings.Contains(name, "kimi"), strings.Contains(name, "moonshot"):
-		return model.ProviderKimi
-	}
-	return ""
-}
-
 var statuslineProvider string
 
 var statuslineCmd = &cobra.Command{
@@ -149,14 +131,14 @@ func contextPlainSegment(cw contextWindowInfo) string {
 }
 
 // quotaDetailedSegment: layout B 的配额段 "5h 72% left (1h9m) · weekly 74% left (5d10h)"。
-func quotaDetailedSegment(cfg *config.Config, modelProv model.Provider, now time.Time) string {
-	segs := quotaWindowSegs(cfg, modelProv, now, true)
+func quotaDetailedSegment(cfg *config.Config, now time.Time) string {
+	segs := quotaWindowSegs(cfg, now, true)
 	return strings.Join(segs, ansiWhite+" · "+ansiReset)
 }
 
 // quotaMinimalSegment: layout C 的配额段 "72%/74% (↻2m)"。
-func quotaMinimalSegment(cfg *config.Config, modelProv model.Provider, now time.Time) string {
-	segs := quotaWindowSegs(cfg, modelProv, now, false)
+func quotaMinimalSegment(cfg *config.Config, now time.Time) string {
+	segs := quotaWindowSegs(cfg, now, false)
 	if len(segs) == 0 {
 		return ""
 	}
@@ -168,7 +150,7 @@ func quotaMinimalSegment(cfg *config.Config, modelProv model.Provider, now time.
 }
 
 // quotaWindowSegs 抽出各窗口渲染:verbose=true 带标签与倒计时,极简只留 %。
-func quotaWindowSegs(cfg *config.Config, modelProv model.Provider, now time.Time, verbose bool) []string {
+func quotaWindowSegs(cfg *config.Config, now time.Time, verbose bool) []string {
 	name, err := resolveStatuslineProvider(cfg)
 	if err != nil {
 		return nil
@@ -218,9 +200,6 @@ func quotaWindowSegs(cfg *config.Config, modelProv model.Provider, now time.Time
 	}
 	if len(segs) == 0 {
 		return nil
-	}
-	if verbose && modelProv != name {
-		segs = append([]string{ansiWhite + "⚡" + ansiReset + providerBadge(s.Provider)}, segs...)
 	}
 	return segs
 }
@@ -411,39 +390,23 @@ func fastLabel(in *statuslineInput) string {
 }
 
 // quotaSegmentFor 选择配额段来源:官方模式且 stdin 带 rate_limits 时,
-// 直接用官方数据(零 API、零缓存);否则回落到订阅 provider 缓存;
-// provider 选择走 resolveStatuslineProvider(--provider / ANTHROPIC_BASE_URL)
-// 失败时取缓存里最近有数据的 provider 当兜底,让用户至少看到已订阅的配额。
+// 直接用官方数据(零 API、零缓存);否则回落到订阅 provider 缓存。
+//
+// provider 选择**只看** --provider / $ANTHROPIC_BASE_URL(走
+// resolveStatuslineProvider)。resolve 失败就不显示 — 不静默挑缓存里
+// "最近有数据的 provider",也不靠模型名猜 — 这两种都是错的:
+//   - cache 兜底:本地代理(127.0.0.1)时,会拿之前 Kimi 会话留下的
+//     缓存冒充当前会话,误导。
+//   - 模型名猜:claude / kimi-k2 这种命名交错时必然命中错对象。
+//
+// 想看非当前会话的 provider,用 `submon status <name>` 或 `submon statusline --provider <name>`。
 func quotaSegmentFor(in *statuslineInput, cfg *config.Config, now time.Time) string {
 	if isOfficialClaude() {
 		if q := claudeQuotaSegment(in, now); q != "" {
 			return q
 		}
 	}
-	if q := quotaSegment(cfg, in.modelProvider(), now); q != "" {
-		return q
-	}
-	// 无显式选择时,取缓存里最近有数据的 provider。
-	if path, err := cfg.CachePath(); err == nil {
-		if file, err := cache.New(path).Load(); err == nil {
-			var best *cache.Entry
-			var bestName model.Provider
-			for _, name := range model.AllProviders() {
-				e := file.Get(name)
-				if e == nil || e.Snapshot == nil {
-					continue
-				}
-				if best == nil || e.FetchedAt.After(best.FetchedAt) {
-					best = e
-					bestName = name
-				}
-			}
-			if best != nil {
-				return quotaSegmentForProvider(cfg, bestName, now)
-			}
-		}
-	}
-	return ""
+	return quotaSegment(cfg, now)
 }
 
 // claudeQuotaSegment 从 stdin 的 rate_limits 渲染官方订阅限额段。
@@ -498,7 +461,7 @@ func renderLayoutB(in *statuslineInput, cfg *config.Config, modelName, dir, cwd 
 		}
 		segs = append(segs, ansiWhite+"⎇"+ansiReset+ansiMagenta+branch+dirtyMark+ansiReset)
 	}
-	if q := quotaDetailedSegment(cfg, in.modelProvider(), now); q != "" {
+	if q := quotaDetailedSegment(cfg, now); q != "" {
 		segs = append(segs, q)
 	}
 	if ph := peakHourReminder(cfg, now); ph != "" {
@@ -538,7 +501,7 @@ func renderLayoutC(in *statuslineInput, cfg *config.Config, modelName, dir, cwd 
 			return strings.Join(segs, sep)
 		}
 	}
-	if q := quotaMinimalSegment(cfg, in.modelProvider(), now); q != "" {
+	if q := quotaMinimalSegment(cfg, now); q != "" {
 		segs = append(segs, q)
 	}
 	if ph := peakHourReminder(cfg, now); ph != "" {
@@ -700,22 +663,18 @@ func envInt64(key string) int64 {
 	return v
 }
 
-// quotaSegment 读缓存渲染配额段。provider badge 在"当前模型属于该
-// provider"时省略(信息冗余)。
+// quotaSegment 读缓存渲染配额段。provider 选择仅来自 --provider /
+// ANTHROPIC_BASE_URL(走 resolveStatuslineProvider),不靠模型名猜。
 //
 // 缓存过期时触发自愈:fork 一个后台静默 watch 刷新(不阻塞本次渲染),
 // 受 RefreshedAt 节流,失败也不会打爆 API。
-func quotaSegment(cfg *config.Config, modelProv model.Provider, now time.Time) string {
-	statuslineModelProvider = modelProv
+func quotaSegment(cfg *config.Config, now time.Time) string {
 	name, err := resolveStatuslineProvider(cfg)
 	if err != nil {
 		return "" // quotas are an optional segment; never break the line
 	}
 	return quotaSegmentForProvider(cfg, name, now)
 }
-
-// statuslineModelProvider 当前会话模型所属 provider(badge 省略判断用)。
-var statuslineModelProvider model.Provider
 
 // quotaSegmentForProvider 渲染指定 provider 的配额段(读缓存)。
 // badge 在"当前模型属于该 provider"时省略(信息冗余)。
@@ -754,10 +713,7 @@ func quotaSegmentForProvider(cfg *config.Config, name model.Provider, now time.T
 	if len(parts) == 0 {
 		return ""
 	}
-	out := ""
-	if statuslineModelProvider != name {
-		out = providerBadge(s.Provider) + " "
-	}
+	out := providerBadge(s.Provider) + " "
 	// 窗口间分隔:与顶层段一致的 " - "。
 	out += strings.Join(parts, ansiWhite+" - "+ansiReset)
 

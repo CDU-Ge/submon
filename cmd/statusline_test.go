@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -166,23 +167,6 @@ func TestQuotaWindowMarkerAndBadge(t *testing.T) {
 	}
 }
 
-func TestModelProviderDetection(t *testing.T) {
-	cases := map[string]model.Provider{
-		"glm-5.3":        model.ProviderZhipu,
-		"GLM-4.7":        model.ProviderZhipu,
-		"minimax-m2":     model.ProviderMinimax,
-		"MiniMax-M2":     model.ProviderMinimax,
-		"claude-fable-5": "",
-	}
-	for name, want := range cases {
-		in := &statuslineInput{}
-		in.Model.ID = name
-		if got := in.modelProvider(); got != want {
-			t.Errorf("modelProvider(%q) = %q, want %q", name, got, want)
-		}
-	}
-}
-
 func TestPeakHourReminder(t *testing.T) {
 	cfg := config.Default()
 
@@ -301,5 +285,51 @@ func TestPeakHourReminderLayoutIntegration(t *testing.T) {
 	cfg.Statusline.Layout = "a"
 	if line := renderStatusline(in, cfg, tt); strings.Contains(line, "高峰") {
 		t.Errorf("non-Zhipu should not embed 高峰 reminder, got %s", line)
+	}
+}
+
+// TestResolveStatuslineProviderRejectsLocal 守住用户报告的核心 bug:
+// ANTHROPIC_BASE_URL=http://127.0.0.1 配 Claude 模型时,以前会被 modelProvider
+// 兜底命中 KIMI(模型名含 "claude" 不命中,但缓存兜底会拿上次 Kimi 会话
+// 的数据冒充当前会话)。现在 resolveStatuslineProvider 不再硬猜,直接
+// 报错,statusline 也不显示配额段。
+func TestResolveStatuslineProviderRejectsLocal(t *testing.T) {
+	origProv := statuslineProvider
+	origBase := os.Getenv("ANTHROPIC_BASE_URL")
+	defer func() {
+		statuslineProvider = origProv
+		os.Setenv("ANTHROPIC_BASE_URL", origBase)
+	}()
+	statuslineProvider = "" // 清掉 --provider,只走 ANTHROPIC_BASE_URL 分支。
+	os.Setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1")
+
+	cfg := config.Default()
+	if _, err := resolveStatuslineProvider(cfg); err == nil {
+		t.Fatal("127.0.0.1 should not resolve to any provider (no rule matches)")
+	}
+}
+
+// TestNoModelNameMatch 守住"不用模型名/ID 猜 provider"的契约 —
+// modelProvider() 已删除,这里通过 statusline 全链路验证:即便 stdin 给
+// 一个含 "kimi" 子串的模型名,只要 ANTHROPIC_BASE_URL 不指向 Kimi,
+// 状态栏就不显示 Kimi 配额。
+func TestNoModelNameMatch(t *testing.T) {
+	origProv := statuslineProvider
+	origBase := os.Getenv("ANTHROPIC_BASE_URL")
+	defer func() {
+		statuslineProvider = origProv
+		os.Setenv("ANTHROPIC_BASE_URL", origBase)
+	}()
+	statuslineProvider = ""
+	os.Setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1")
+
+	cfg := config.Default()
+	in := &statuslineInput{Model: struct {
+		ID      string `json:"id"`
+		Display string `json:"display_name"`
+	}{ID: "kimi-k2-thinking", Display: "Kimi K2"}}
+	// 渲染配额段 — 应当空(本地代理既非官方 Claude 也无法 resolve)。
+	if got := quotaSegmentFor(in, cfg, time.Now()); got != "" {
+		t.Errorf("local proxy should not show quota, got %q", got)
 	}
 }
