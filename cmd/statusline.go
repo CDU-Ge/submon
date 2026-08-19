@@ -65,6 +65,7 @@ type statuslineInput struct {
 }
 
 var statuslineProvider string
+var statuslineShowProvider bool
 
 var statuslineCmd = &cobra.Command{
 	Use:   "statusline",
@@ -713,7 +714,13 @@ func quotaSegmentForProvider(cfg *config.Config, name model.Provider, now time.T
 	if len(parts) == 0 {
 		return ""
 	}
-	out := providerBadge(s.Provider) + " "
+	out := ""
+	// badge 默认关 -- 多 provider 配置切换时容易混淆,看 quota 数字本身
+	// 就够判断状态。调试 / 多 provider 排查时用 --show-provider 或
+	// SUBMON_SHOW_PROVIDER=1 临时打开。
+	if statuslineShowProvider {
+		out = providerBadge(s.Provider) + " "
+	}
 	// 窗口间分隔:与顶层段一致的 " - "。
 	out += strings.Join(parts, ansiWhite+" - "+ansiReset)
 
@@ -760,20 +767,12 @@ func maybeSelfHeal(cachePath string, entry *cache.Entry, cfg *config.Config, now
 // badgeText is the plain (uncolored) provider label.
 func badgeText(p model.Provider) string { return strings.ToUpper(string(p)) }
 
-// providerBadge renders the provider tag, uppercase for distinction.
+// providerBadge 渲染 provider tag。**默认情况下不显示**(见
+// statuslineShowProvider / --show-provider),仅在调试 / 多 provider 排查
+// 时打开。打开时走 ansiWhite — 辅助信息不动色(CLAUDE.md 约定)。
 func providerBadge(p model.Provider) string {
 	label := strings.ToUpper(string(p))
-	switch p {
-	case model.ProviderZhipu:
-		return ansiCyan + label + ansiReset
-	case model.ProviderMinimax:
-		return ansiYellow + label + ansiReset
-	case model.ProviderOpenCode:
-		return ansiMagenta + label + ansiReset
-	case model.ProviderKimi:
-		return ansiBlue + label + ansiReset
-	}
-	return label
+	return ansiWhite + label + ansiReset
 }
 
 // resolveStatuslineProvider: --provider flag > ANTHROPIC_BASE_URL 自动识别。
@@ -856,5 +855,10 @@ func stripANSI(s string) string {
 
 func init() {
 	statuslineCmd.Flags().StringVar(&statuslineProvider, "provider", "", "要展示的 provider(zhipu|minimax|opencode|kimi)")
+	statuslineCmd.Flags().BoolVar(&statuslineShowProvider, "show-provider", false, "在配额段前显示 provider badge(默认关,辅助信息用纯白)")
+	// 环境变量等价于开关 — 临时调试比 --show-provider 方便。
+	if v := os.Getenv("SUBMON_SHOW_PROVIDER"); v != "" && v != "0" && v != "false" {
+		statuslineShowProvider = true
+	}
 	rootCmd.AddCommand(statuslineCmd)
 }

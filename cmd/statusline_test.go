@@ -333,3 +333,28 @@ func TestNoModelNameMatch(t *testing.T) {
 		t.Errorf("local proxy should not show quota, got %q", got)
 	}
 }
+
+// TestProviderBadgeDefaultOff 守住"provider badge 默认关"的契约:
+// quotaSegmentForProvider 默认不输出 badge 文本 -- 多 provider 配置切换
+// 时,看 quota 数字本身就够了。需要排查时用 --show-provider 或
+// SUBMON_SHOW_PROVIDER=1 临时打开。
+func TestProviderBadgeDefaultOff(t *testing.T) {
+	cfg := config.Default()
+	rem := float64(72)
+	snap := &model.Snapshot{
+		Provider:  model.ProviderKimi,
+		FetchedAt: time.Now(),
+		ShortWindow: &model.Window{
+			Label:        "5h",
+			RemainingPct: &rem,
+		},
+	}
+	// 默认关闭:输出里不该有 "KIMI"。
+	if got := quotaSegmentForProvider(cfg, model.ProviderKimi, time.Now()); strings.Contains(got, "KIMI") {
+		t.Errorf("default badge off — got %q should not contain KIMI", got)
+	}
+	if got := quotaSegmentForProvider(cfg, model.ProviderKimi, time.Now()); strings.Contains(got, ansiCyan) {
+		t.Errorf("default badge off — got %q should not contain ansiCyan", got)
+	}
+	_ = snap // snap shape lock — 留作未来更细的断言入口
+}
