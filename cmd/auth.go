@@ -128,6 +128,13 @@ var authCmd = &cobra.Command{
 		"多 key:\n" +
 		"  submon auth <provider> add <label>   新增/覆盖指定 label 的 Key\n" +
 		"  submon auth <provider> remove <label> 删除指定 label(默认删除 default Key)\n",
+	Example: "  submon auth zhipu                       # 配 default Key(交互输入)\n" +
+		"  echo \"$TOKEN\" | submon auth zhipu --stdin  # CI / 脚本里批量配\n" +
+		"  submon auth zhipu add alice             # 多 key 场景:加 alice 账号\n" +
+		"  submon auth zhipu remove alice          # 删除指定 label 的 Key\n" +
+		"  submon auth ls                          # 看每个 provider 的存储形态\n" +
+		"  submon auth check                       # 解密 + 完整性体检(systemd watchdog 用)\n" +
+		"  submon auth discover                    # 扫 env / CC settings,询问式导入",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			return cmd.Help()
@@ -141,11 +148,12 @@ var authCmd = &cobra.Command{
 		// provider 名
 		name := args[0]
 		if _, ok := authRegistry[name]; !ok {
-			return fmt.Errorf("未知 provider %q (可选: %s)", name, strings.Join(authProviderNames(), " | "))
+			return fmt.Errorf("不认识 provider %q\n  可选: %s\n  看用法: submon auth --help",
+				name, strings.Join(authProviderNames(), " | "))
 		}
 		if len(args) >= 2 && args[1] == "add" {
 			if len(args) < 3 {
-				return fmt.Errorf("用法: submon auth %s add <label>", name)
+				return fmt.Errorf("用法: submon auth %s add <label>\n  例: submon auth %s add alice", name, name)
 			}
 			return runAuthAddLabeled(cmd, name, args[2])
 		}
@@ -179,7 +187,8 @@ func authUsage() string {
 func runAuthSet(cmd *cobra.Command, name string) error {
 	h, ok := authRegistry[name]
 	if !ok {
-		return fmt.Errorf("未知 provider %q (可选: %s)", name, strings.Join(authProviderNames(), " | "))
+		return fmt.Errorf("不认识 provider %q\n  可选: %s\n  看用法: submon auth --help",
+			name, strings.Join(authProviderNames(), " | "))
 	}
 	// 读取策略:
 	//   TTY → 完全不走 bufio(避免 bufio 预读与 term.ReadPassword 抢 fd)。
@@ -198,7 +207,7 @@ func runAuthSet(cmd *cobra.Command, name string) error {
 			return err
 		}
 		if f.Required && v == "" {
-			return fmt.Errorf("%s 不能为空", f.Key)
+			return fmt.Errorf("%s 不能为空 — 重新跑 `submon auth %s` 输入有效值", f.Key, name)
 		}
 		values[f.Key] = v
 	}
@@ -207,7 +216,7 @@ func runAuthSet(cmd *cobra.Command, name string) error {
 		if f.Secret && values[f.Key] != "" && !secret.IsEncrypted(values[f.Key]) {
 			enc, err := secret.Encrypt(values[f.Key])
 			if err != nil {
-				return fmt.Errorf("encrypt %s: %w", f.Key, err)
+				return fmt.Errorf("加密 %s 失败: %w\n  常见原因: 磁盘写不动 ~/.config/submon/secret.key", f.Key, err)
 			}
 			values[f.Key] = enc
 		}
@@ -401,7 +410,7 @@ func runAuthRemove(cmd *cobra.Command, name string) error {
 // 走顶层字段;其他 label 走 [[keys]] 数组。
 func runAuthRemoveLabeled(cmd *cobra.Command, name, label string) error {
 	if _, ok := authRegistry[name]; !ok {
-		return fmt.Errorf("未知 provider %q", name)
+		return fmt.Errorf("不认识 provider %q\n  可选: %s", name, strings.Join(authProviderNames(), " | "))
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -424,7 +433,7 @@ func runAuthRemoveLabeled(cmd *cobra.Command, name, label string) error {
 func runAuthAddLabeled(cmd *cobra.Command, name, label string) error {
 	h, ok := authRegistry[name]
 	if !ok {
-		return fmt.Errorf("未知 provider %q", name)
+		return fmt.Errorf("不认识 provider %q\n  可选: %s", name, strings.Join(authProviderNames(), " | "))
 	}
 	useTerm := !authStdin && term.IsTerminal(int(os.Stdin.Fd()))
 	var br *bufio.Reader
@@ -438,7 +447,7 @@ func runAuthAddLabeled(cmd *cobra.Command, name, label string) error {
 			return err
 		}
 		if f.Required && v == "" {
-			return fmt.Errorf("%s 不能为空", f.Key)
+			return fmt.Errorf("%s 不能为空 — 重新跑 `submon auth %s add %s` 输入有效值", f.Key, name, label)
 		}
 		values[f.Key] = v
 	}
@@ -446,7 +455,7 @@ func runAuthAddLabeled(cmd *cobra.Command, name, label string) error {
 		if f.Secret && values[f.Key] != "" && !secret.IsEncrypted(values[f.Key]) {
 			enc, err := secret.Encrypt(values[f.Key])
 			if err != nil {
-				return fmt.Errorf("encrypt %s: %w", f.Key, err)
+				return fmt.Errorf("加密 %s 失败: %w\n  常见原因: 磁盘写不动 ~/.config/submon/secret.key", f.Key, err)
 			}
 			values[f.Key] = enc
 		}
@@ -614,7 +623,7 @@ func runAuthCheck(cmd *cobra.Command) error {
 	for _, p := range problems {
 		fmt.Fprintln(cmd.ErrOrStderr(), "✗", p)
 	}
-	return fmt.Errorf("%d 项问题", len(problems))
+	return fmt.Errorf("%d 项问题 — 跑 `submon auth <provider>` 重新配置,或 `submon auth --help` 查看用法", len(problems))
 }
 
 // authSecretValues 提取一个 provider 的所有 Secret 字段值,供 check 体检用。

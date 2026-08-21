@@ -116,7 +116,7 @@ func (k *Kimi) client() *http.Client {
 	if k.Client != nil {
 		return k.Client
 	}
-	return &http.Client{Timeout: 10 * time.Second}
+	return &http.Client{Timeout: HTTPTimeout}
 }
 
 func (k *Kimi) baseURL() string {

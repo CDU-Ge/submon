@@ -29,6 +29,8 @@ var checkCmd = &cobra.Command{
 		"  4. 通知配置与告警状态机\n" +
 		"  5. systemd timer 运行状态\n" +
 		"全部通过时退出码为 0,否则为 1。",
+	Example: "  submon check             # 全项体检\n" +
+		"  submon check && echo ok  # 流水线里用退出码判断",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ok := true
 		fail := func(format string, a ...any) { ok = false; fmt.Fprintf(cmd.OutOrStdout(), "✗ "+format+"\n", a...) }

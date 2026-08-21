@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ge/subscription-monitor/internal/cache"
@@ -26,6 +29,10 @@ var watchCmd = &cobra.Command{
 	Short: "单次刷新 + 催用提醒(供 systemd timer 调用)",
 	Long: "刷新全部 provider、更新共享缓存;窗口即将重置且剩余额度较多时\n" +
 		"推送「抓紧使用」提醒。设计为每次 timer 触发运行一次。",
+	Example: "  submon watch                  # 正常模式(供 systemd timer)\n" +
+		"  submon watch --quiet          # 静默模式(statusline 自愈 fork 用)\n" +
+		"  systemctl --user enable --now submon-watch.timer  # 接入定时器\n" +
+		"  submon install                # 一键生成 + 启用上面的 timer",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if watchQuiet {
 			// 静默模式(statusline 自愈 fork):日志全部丢弃。
@@ -46,17 +53,41 @@ var watchCmd = &cobra.Command{
 		}
 
 		g := &notify.Gotify{URL: cfg.Notify.Gotify.URL, AppToken: cfg.Notify.Gotify.AppToken}
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		// SIGINT / SIGTERM:第一次按 = 取消 in-flight HTTP,清干净退出;
+		// 第二次按 = 立即放弃,不写缓存。两段 ctx:用户取消 + 60s 总预算,
+		// 任何一个先到都让所有 provider Fetch 收到 Done 信号。
+		ctx, stopSig := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stopSig()
+		ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		defer cancel()
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+		go func() {
+			<-sigCh
+			if !watchQuiet {
+				fmt.Fprintln(cmd.ErrOrStderr(), "\n收到中断信号 — 取消 in-flight 刷新,正在清理... (再按一次强退)")
+			}
+			cancel()
+			<-sigCh
+			if !watchQuiet {
+				fmt.Fprintln(cmd.ErrOrStderr(), "\n再次收到中断 — 强制退出,不写缓存")
+			}
+			os.Exit(130)
+		}()
+		defer signal.Stop(sigCh)
 
-		var failed bool
+		var failed []string
 		for _, name := range names {
 			// 多 key 场景:每个 Key 独立取一次 — provider 通常按账号
 			// 独立计数配额,合并 fetch 既不准确也覆盖不到。
 			results := refresh.Many(ctx, name, cfg, log)
 			for _, res := range results {
 				if res.Err != nil {
-					failed = true
+					label := res.KeyLabel
+					if label == "" {
+						label = "default"
+					}
+					failed = append(failed, fmt.Sprintf("%s/%s: %v", name, label, res.Err))
 					continue
 				}
 				// 采样(供预测器估转换率),再评估。
@@ -66,8 +97,13 @@ var watchCmd = &cobra.Command{
 				}
 			}
 		}
-		if failed {
-			return fmt.Errorf("部分 provider 刷新失败")
+		if len(failed) > 0 {
+			// 汇总到 stderr 让人眼能扫到每条具体 provider 失败原因,
+			// 再用一个简洁的 error 让 systemd timer / shell 拿到非零退出码。
+			for _, line := range failed {
+				fmt.Fprintln(cmd.ErrOrStderr(), "✗", line)
+			}
+			return fmt.Errorf("%d 项刷新失败 — 详见上方 ✗ 行(网络/token 过期/限额都会触发)", len(failed))
 		}
 		return nil
 	},

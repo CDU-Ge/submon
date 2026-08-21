@@ -87,6 +87,9 @@ func runAuthDiscover(cmd *cobra.Command) error {
 		if plain == "" {
 			continue
 		}
+		// discoverApply 模式下:已经收集到所有候选项,跑前统一报一次计数
+		// 让人能预期到要发生啥(导入 X 条到 Y,可能改密文)。
+		_ = plain
 		if !discoverApply {
 			fmt.Fprintf(cmd.OutOrStdout(), "\n导入 %s.%s (%s)? [y/N]: ", s.Provider, s.Field, s.Value)
 			line, err := readDiscoverLine()

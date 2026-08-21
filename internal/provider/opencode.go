@@ -54,7 +54,7 @@ func (o *OpenCode) client() *http.Client {
 	if o.Client != nil {
 		return o.Client
 	}
-	return &http.Client{Timeout: 10 * time.Second}
+	return &http.Client{Timeout: HTTPTimeout}
 }
 
 func (o *OpenCode) baseURL() string {

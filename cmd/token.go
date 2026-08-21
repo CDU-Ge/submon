@@ -14,11 +14,15 @@ import (
 
 // tokenCmd manages provider credentials, encrypted at rest (AES-256-GCM via
 // the secret package). Tokens never appear in plaintext in config.toml.
+//
+// Deprecated: 新代码请用 `submon auth <provider>`。两者底层都是同一份
+// secret.Encrypt + 同一份 config.Save,只是 auth 的字段定义走注册表,不
+// 会把 token 暴露到 shell history / argv。本命令保留仅供脚本兼容。
 var tokenCmd = &cobra.Command{
-	Use:   "token",
-	Short: "管理 provider token(加密存储,已弃用 — 推荐 submon auth)",
-	Long: "Deprecated: 推荐使用 `submon auth <provider>`,统一入口不会让 token 落进 shell history。\n" +
-		"本命令保留用于脚本兼容:`submon token get/set/ls/unset <slot>`。",
+	Use:        "token",
+	Short:      "[已弃用] 管理 provider token — 推荐 `submon auth <provider>`",
+	Long:       "Deprecated: 推荐 `submon auth <provider>` — 统一入口从 stdin 读,避开 shell history。\n\n保留本命令仅供脚本兼容: `submon token get/set/ls/unset <slot>`。",
+	Deprecated: "请改用 `submon auth <provider>`(相同加密路径,统一字段定义,不会把 token 暴露到 argv)",
 }
 
 var tokenStdin bool

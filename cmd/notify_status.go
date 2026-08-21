@@ -116,12 +116,12 @@ var notifyStatusCmd = &cobra.Command{
 	},
 }
 
-var notifyArmCmd = &cobra.Command{
-	Use:   "arm",
-	Short: "重置告警状态(用于测试下一次推送)",
-	Long: "把所有 provider 的告警状态重置为 ok。\n" +
-		"下次 watch 运行时,若配额确实低于阈值,会重新推送。\n" +
-		"主要用于调试通知链路。",
+var notifyResetCmd = &cobra.Command{
+	Use:        "reset",
+	Aliases:    []string{"arm"}, // "arm" 是告警系统术语,作为 deprecated alias 保留
+	Short:      "重置告警状态机(供调试下一次推送)",
+	Long:       "把所有 provider 的告警状态重置为 ok。\n下次 watch 运行时,若配额确实低于阈值,会重新推送。\n主要用于调试通知链路。",
+	Deprecated: `术语 "arm" 不直观,改用 "reset" — 详见 submon notify --help`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
 		if err != nil {
@@ -150,7 +150,7 @@ var notifyArmCmd = &cobra.Command{
 }
 
 func init() {
-	notifyCmd.AddCommand(notifyStatusCmd, notifyArmCmd, notifyTestCmd)
+	notifyCmd.AddCommand(notifyStatusCmd, notifyResetCmd, notifyTestCmd)
 }
 
 // firstLine 截取首行(LastMessage 是多行正文)。

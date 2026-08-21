@@ -28,6 +28,11 @@ var statusCmd = &cobra.Command{
 		"缓存未过期时直接读缓存;--force 强制刷新并更新缓存。\n\n" +
 		"多 key 场景:同一 provider 配置了多个 [[keys]] 时,每个 key 单独\n" +
 		"展示一段(标题里带 label)。",
+	Example: "  submon status            # 仅展示已配置的 provider\n" +
+		"  submon status zhipu      # 只看智谱(无论是否已配置)\n" +
+		"  submon status --force    # 跳过缓存,重新拉全部 provider\n" +
+		"  submon status --json     # 机器可读输出(供脚本 / jq)\n" +
+		"  submon status --no-color # 关闭颜色(自动在管道时启用)",
 	Args: cobra.MaximumNArgs(1),
 	ValidArgs: func() []string {
 		var names []string
@@ -117,7 +122,7 @@ var statusCmd = &cobra.Command{
 					r.cached = true
 				}
 				if r.snap == nil && r.err == nil {
-					r.err = fmt.Errorf("获取失败")
+					r.err = fmt.Errorf("无数据 — 先跑 `submon watch` 拉一次")
 				}
 				rows = append(rows, r)
 			}
@@ -133,7 +138,7 @@ var statusCmd = &cobra.Command{
 					out.Snapshots = append(out.Snapshots, r.snap)
 				}
 				if r.err != nil {
-					out.Errors = append(out.Errors, r.err.Error())
+					out.Errors = append(out.Errors, fmt.Sprintf("%s/%s: %s", r.provider, r.label, r.err))
 				}
 			}
 			enc := json.NewEncoder(cmd.OutOrStdout())
@@ -141,7 +146,7 @@ var statusCmd = &cobra.Command{
 			return enc.Encode(out)
 		}
 
-		failed := false
+		failed := []string{}
 		for i, r := range rows {
 			if i > 0 {
 				fmt.Fprintln(cmd.OutOrStdout())
@@ -149,16 +154,19 @@ var statusCmd = &cobra.Command{
 			if r.snap != nil {
 				renderStatus(cmd.OutOrStdout(), r.snap, time.Now(), cfg)
 				if r.err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "警告: %v\n", r.err)
+					fmt.Fprintf(cmd.ErrOrStderr(), "警告 %s/%s: %v\n", r.provider, r.label, r.err)
 				}
 				continue
 			}
-			failed = true
-			fmt.Fprintf(cmd.OutOrStdout(), "%s %s %s 未配置或不可用: %v\n",
+			failed = append(failed, fmt.Sprintf("%s/%s: %v", r.provider, r.label, r.err))
+			fmt.Fprintf(cmd.OutOrStdout(), "%s %s %s 不可用: %v\n",
 				providerBadge(r.provider), r.label, ansiDim, r.err)
 		}
-		if failed {
-			return fmt.Errorf("部分 provider 不可用")
+		if len(failed) > 0 {
+			fmt.Fprintln(cmd.ErrOrStderr(), "\n建议:")
+			fmt.Fprintln(cmd.ErrOrStderr(), "  - token 失效:submon auth <provider> 重新配置")
+			fmt.Fprintln(cmd.ErrOrStderr(), "  - 网络抖动:重跑 submon status --force")
+			return fmt.Errorf("%d 项 provider 不可用 — 详见上方面板", len(failed))
 		}
 		return nil
 	},
@@ -173,7 +181,7 @@ func targetProviders(args []string, cfg *config.Config) ([]model.Provider, error
 	if len(args) == 1 {
 		name := model.Provider(args[0])
 		if !model.ValidProvider(name) {
-			return nil, fmt.Errorf("未知 provider %q(zhipu|minimax|opencode|kimi)", args[0])
+			return nil, fmt.Errorf("不认识 provider %q\n  可选: zhipu | minimax | opencode | kimi\n  看用法: submon status --help", args[0])
 		}
 		return []model.Provider{name}, nil
 	}

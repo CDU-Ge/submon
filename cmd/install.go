@@ -15,11 +15,12 @@ import (
 // + timer for `submon watch` and enables it. Units are generated with the
 // real binary path so a locally built binary just works.
 var (
-	installPrint      bool
-	installUninst     bool
-	installTimer      string
-	installNoClaude   bool // 跳过自动注册 CC 状态栏
-	installClaudeOnly bool // 只注册 CC 状态栏,跳过 systemd
+	installPrint       bool
+	installUninst      bool
+	installTimer       string
+	installNoClaude    bool // 跳过自动注册 CC 状态栏
+	installClaudeOnly  bool // 只注册 CC 状态栏,跳过 systemd
+	installClaudePrint bool // --print 子标志:只预览 CC 状态栏要写入的内容
 )
 
 const (
@@ -35,6 +36,7 @@ var installCmd = &cobra.Command{
 		"  submon install              安装 timer + 自动注册 CC 状态栏\n" +
 		"  submon install --no-claude  只装 timer,不碰 Claude Code\n" +
 		"  submon install --claude-only 只注册 CC 状态栏,跳过 systemd\n" +
+		"  submon install --print-claude 预览 CC 状态栏要写入的 JSON(不读不写)\n" +
 		"  submon install --print      只预览生成的单元,不写入\n" +
 		"  submon install --uninstall  停止、禁用并删除单元\n\n" +
 		"子命令保留向后兼容:\n" +
@@ -42,9 +44,19 @@ var installCmd = &cobra.Command{
 		"环境变量凭据(ANTHROPIC_AUTH_TOKEN 等)不会写入 unit 文件 —\n" +
 		"请放在 ~/.config/submon/config.toml(submon auth <provider>)\n" +
 		"或 ~/.config/environment.d/ 中。",
+	Example: "  submon install                 # 装 timer + 自动接 CC 状态栏\n" +
+		"  submon install --no-claude     # 只装 systemd,不碰 Claude Code\n" +
+		"  submon install --interval 1m   # 自定义触发间隔\n" +
+		"  submon install --print         # 预览 unit 不写入\n" +
+		"  submon install --print-claude  # 预览 CC 状态栏 JSON,不读不写\n" +
+		"  submon install --uninstall     # 停止 + 禁用 + 删除单元",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if installUninst {
 			return uninstallUnits(cmd)
+		}
+		// --print-claude 优先:只预览 CC 状态栏,不读不写不装。
+		if installClaudePrint {
+			return runInstallClaude(cmd)
 		}
 		// --claude-only 模式:只做 CC 状态栏注册,跳过 systemd。
 		if installClaudeOnly {
@@ -112,6 +124,9 @@ var installCmd = &cobra.Command{
 // runInstallClaude 把 statusLine 写入 ~/.claude/settings.json(保留其他字段)。
 // 与 installClaudeCmd 共享同一份合并写入逻辑 — 用户即便之前没跑过
 // `submon install claude`,主 install 路径也会自动跑一次。
+//
+// --print 模式:只渲染将写入 settings.json 的 JSON 片段,不读不写,适合
+// 想看看到底改了什么再决定跑不跑。
 func runInstallClaude(cmd *cobra.Command) error {
 	bin, err := os.Executable()
 	if err != nil {
@@ -129,8 +144,23 @@ func runInstallClaude(cmd *cobra.Command) error {
 	settings := map[string]any{}
 	if raw, err := os.ReadFile(path); err == nil {
 		if err := json.Unmarshal(raw, &settings); err != nil {
-			return fmt.Errorf("解析 %s: %w(手动修复后重试)", path, err)
+			return fmt.Errorf("解析 %s: %w\n  手动修复 JSON 后重试,或 `mv %s %s.bak` 让 submon 重建", path, err, path, path)
 		}
+	}
+	if installClaudePrint {
+		preview := map[string]any{
+			"type":            "command",
+			"command":         bin + " statusline",
+			"padding":         0,
+			"refreshInterval": 30,
+		}
+		out, err := json.MarshalIndent(preview, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "将写入", path, "的 statusLine 段:")
+		fmt.Fprintln(cmd.OutOrStdout(), string(out))
+		return nil
 	}
 	// 已经接好了就跳过 — 多次跑 install 不会反复覆盖用户改过的 statusLine 配置。
 	if _, ok := settings["statusLine"]; ok {
@@ -240,5 +270,6 @@ func init() {
 	installCmd.Flags().StringVar(&installTimer, "interval", "5m", "触发间隔(systemd 时长格式,如 5m、15m)")
 	installCmd.Flags().BoolVar(&installNoClaude, "no-claude", false, "跳过自动注册 Claude Code 状态栏")
 	installCmd.Flags().BoolVar(&installClaudeOnly, "claude-only", false, "只注册 Claude Code 状态栏,跳过 systemd")
+	installCmd.PersistentFlags().BoolVar(&installClaudePrint, "print-claude", false, "(同 --claude-only --print) 只预览 CC 状态栏要写入的 JSON")
 	rootCmd.AddCommand(installCmd)
 }

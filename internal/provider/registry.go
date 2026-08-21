@@ -4,10 +4,16 @@ import (
 	"context"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/ge/subscription-monitor/internal/config"
 	"github.com/ge/subscription-monitor/internal/model"
 )
+
+// HTTPTimeout 是单个 provider 请求的超时上限 — 包含 DNS / TCP / TLS /
+// 响应头 / 响应体。clig.deck robustness 要求"卡死要能跳出",不能无限等。
+// 15s 兼容慢网络同时保证 watch 单轮不会拖太久。
+const HTTPTimeout = 15 * time.Second
 
 // DefaultZhipuBaseURL 是 zhipu 的内置默认基址(智谱开放平台)。
 const DefaultZhipuBaseURL = "https://open.bigmodel.cn/api/anthropic"

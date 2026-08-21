@@ -64,7 +64,7 @@ func (z *Zhipu) client() *http.Client {
 	if z.Client != nil {
 		return z.Client
 	}
-	return &http.Client{Timeout: 10 * time.Second}
+	return &http.Client{Timeout: HTTPTimeout}
 }
 
 // quotaLimitResponse mirrors the quota/limit endpoint payload.

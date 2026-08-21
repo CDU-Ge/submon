@@ -58,7 +58,7 @@ func (m *MiniMax) client() *http.Client {
 	if m.Client != nil {
 		return m.Client
 	}
-	return &http.Client{Timeout: 10 * time.Second}
+	return &http.Client{Timeout: HTTPTimeout}
 }
 
 func (m *MiniMax) baseURL() string {
