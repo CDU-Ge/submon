@@ -321,5 +321,10 @@ dist
 .yarn/install-state.gz
 .pnp.*
 
+# 引用了尚未公开的 skill , 因此 ignore
+.agents
+.claude/skills
+skills-lock.json
+
 # 最终编译的二进制文件
 submon
