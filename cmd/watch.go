@@ -51,15 +51,19 @@ var watchCmd = &cobra.Command{
 
 		var failed bool
 		for _, name := range names {
-			res := refresh.One(ctx, name, cfg, log)
-			if res.Err != nil {
-				failed = true
-				continue
-			}
-			// 采样(供预测器估转换率),再评估。
-			hist := recordSample(cfg, name, res.Snapshot)
-			if err := runAlertMachine(ctx, cfg, g, name, res.Snapshot, hist, log); err != nil {
-				log.Error("alert machine", "provider", name, "err", err)
+			// 多 key 场景:每个 Key 独立取一次 — provider 通常按账号
+			// 独立计数配额,合并 fetch 既不准确也覆盖不到。
+			results := refresh.Many(ctx, name, cfg, log)
+			for _, res := range results {
+				if res.Err != nil {
+					failed = true
+					continue
+				}
+				// 采样(供预测器估转换率),再评估。
+				hist := recordSample(cfg, name, res.KeyLabel, res.Snapshot)
+				if err := runAlertMachine(ctx, cfg, g, name, res.KeyLabel, res.Snapshot, hist, log); err != nil {
+					log.Error("alert machine", "provider", name, "label", res.KeyLabel, "err", err)
+				}
 			}
 		}
 		if failed {
@@ -69,9 +73,10 @@ var watchCmd = &cobra.Command{
 	},
 }
 
-// recordSample 把本次快照的"已用%"写入历史,返回该 provider 的完整
-// 历史(供预测器估转换率)。
-func recordSample(cfg *config.Config, name model.Provider, snap *model.Snapshot) []cache.Sample {
+// recordSample 把本次快照的"已用%"写入历史,返回该 (provider, label)
+// 的完整历史(供预测器估转换率)。多 key 场景:label 区分,每个 Key
+// 各自一份 sample 序列。
+func recordSample(cfg *config.Config, name model.Provider, label string, snap *model.Snapshot) []cache.Sample {
 	path, err := cfg.CachePath()
 	if err != nil {
 		return nil
@@ -92,7 +97,7 @@ func recordSample(cfg *config.Config, name model.Provider, snap *model.Snapshot)
 	if err := store.Save(file); err != nil {
 		return nil
 	}
-	if e := file.Get(name); e != nil {
+	if e := file.GetLabeled(name, label); e != nil {
 		return e.History
 	}
 	return nil
@@ -109,7 +114,9 @@ func recordSample(cfg *config.Config, name model.Provider, snap *model.Snapshot)
 //     urgent/notice/zero(未使用极端值)/usedup,阈值同前。
 //
 // 组合状态 = weekly级别:5h级别,任一变化即推送;推送失败不推进状态。
-func runAlertMachine(ctx context.Context, cfg *config.Config, g *notify.Gotify, name model.Provider, snap *model.Snapshot, hist []cache.Sample, log *slog.Logger) error {
+//
+// label 区分多 key 各自的告警状态机;空 label 走单 key 老路径。
+func runAlertMachine(ctx context.Context, cfg *config.Config, g *notify.Gotify, name model.Provider, label string, snap *model.Snapshot, hist []cache.Sample, log *slog.Logger) error {
 	path, err := cfg.CachePath()
 	if err != nil {
 		return err
@@ -119,7 +126,7 @@ func runAlertMachine(ctx context.Context, cfg *config.Config, g *notify.Gotify, 
 	if err != nil {
 		return err
 	}
-	e := file.Get(name)
+	e := file.GetLabeled(name, label)
 	if e == nil {
 		e = &cache.Entry{}
 	}
@@ -175,11 +182,11 @@ func runAlertMachine(ctx context.Context, cfg *config.Config, g *notify.Gotify, 
 		return nil
 	}
 
-	title, msg, priority := formatAlert(name, snap, newState, weeklyLevel, fate, hit, wastePct, zeroUsage, cfg)
+	title, msg, priority := formatAlert(name, label, snap, newState, weeklyLevel, fate, hit, wastePct, zeroUsage, cfg)
 	if title == "" {
 		// 静默级别:仍推进状态(避免每 tick 重复计算),不推送。
 		e.AlertState = cache.AlertState{Level: newState, UpdatedAt: now}
-		file.Set(name, e)
+		file.SetLabeled(name, label, e)
 		_ = store.Save(file)
 		return nil
 	}
@@ -188,19 +195,24 @@ func runAlertMachine(ctx context.Context, cfg *config.Config, g *notify.Gotify, 
 		return err
 	}
 	e.AlertState = cache.AlertState{Level: newState, UpdatedAt: now, LastMessage: title + "\n" + msg}
-	file.Set(name, e)
+	file.SetLabeled(name, label, e)
 	if err := store.Save(file); err != nil {
 		return err
 	}
-	log.Info("提醒状态变化", "provider", name, "from", prev, "to", newState)
+	log.Info("提醒状态变化", "provider", name, "label", label, "from", prev, "to", newState)
 	return nil
 }
 
 // formatAlert 生成催用通知。优先报告 weekly 必然浪费(更严重、更早),
 // 其次 5h 窗口预测。标题首词标紧急度。返回 ("", "", 0) 表示静默。
-func formatAlert(name model.Provider, snap *model.Snapshot, state, weeklyLevel string, fate *predict.Result, hit *model.Window, wastePct *float64, zeroUsage bool, cfg *config.Config) (string, string, int) {
+// label 非空且非 default 时拼到 provider 中文名后(如"智谱/alice")。
+func formatAlert(name model.Provider, label string, snap *model.Snapshot, state, weeklyLevel string, fate *predict.Result, hit *model.Window, wastePct *float64, zeroUsage bool, cfg *config.Config) (string, string, int) {
 	now := time.Now()
 	detail := windowDetail(snap, now)
+	provName := providerCN(name)
+	if label != "" && label != "default" {
+		provName += "/" + label
+	}
 	prio := cfg.Notify.Gotify.Priority
 	urgentPrio := prio + 3
 	if urgentPrio > 10 {
@@ -220,13 +232,13 @@ func formatAlert(name model.Provider, snap *model.Snapshot, state, weeklyLevel s
 				"总消耗能力 ≈ %.0f%% < 剩余 %.0f%%",
 			fate.WindowsLeft, conv, fate.WindowsLeft*fate.MaxBurnPerWindow, *snap.LongWindow.RemainingPct)
 		if urgent {
-			title := fmt.Sprintf("【紧急】%s 每周配额注定浪费 %.0f%%", providerCN(name), fate.InevitablePct)
+			title := fmt.Sprintf("【紧急】%s 每周配额注定浪费 %.0f%%", provName, fate.InevitablePct)
 			msg := fmt.Sprintf("每周配额还剩 %.0f%%,但到重置前无论怎么用都用不完了:\n%s\n"+
 				"预计浪费 %.0f%%。除非大幅提高使用强度,否则这部分就是白交钱。\n\n%s",
 				*snap.LongWindow.RemainingPct, math, fate.InevitablePct, detail)
 			return title, msg, urgentPrio
 		}
-		title := fmt.Sprintf("【提醒】%s 每周配额将浪费 %.0f%%", providerCN(name), fate.InevitablePct)
+		title := fmt.Sprintf("【提醒】%s 每周配额将浪费 %.0f%%", provName, fate.InevitablePct)
 		msg := fmt.Sprintf("每周配额还剩 %.0f%%,按每天最多 3 个 5h 窗口算,重置前用不完:\n%s\n\n%s",
 			*snap.LongWindow.RemainingPct, math, detail)
 		return title, msg, prio
@@ -238,7 +250,7 @@ func formatAlert(name model.Provider, snap *model.Snapshot, state, weeklyLevel s
 			return "", "", 0
 		}
 		// 回到 ok:窗口重置完成,轻描淡写。
-		return fmt.Sprintf("submon %s: 配额窗口已重置", providerCN(name)),
+		return fmt.Sprintf("submon %s: 配额窗口已重置", provName),
 			"上一个窗口已重置,新窗口额度已生效。\n\n" + detail, prio
 	}
 
@@ -247,7 +259,7 @@ func formatAlert(name model.Provider, snap *model.Snapshot, state, weeklyLevel s
 	leftPct := *hit.RemainingPct
 
 	if zeroUsage {
-		title := fmt.Sprintf("【提醒】%s %s配额还未使用,即将重置", providerCN(name), winCN)
+		title := fmt.Sprintf("【提醒】%s %s配额还未使用,即将重置", provName, winCN)
 		msg := fmt.Sprintf("%s配额 %s 后重置,目前剩余 %.0f%% 尚未使用。\n"+
 			"如果这段时间不打算用可以忽略;要用就趁现在。\n\n%s",
 			winCN, until, leftPct, detail)
@@ -259,7 +271,7 @@ func formatAlert(name model.Provider, snap *model.Snapshot, state, weeklyLevel s
 		wasteStr = fmt.Sprintf("%.0f%%", *wastePct)
 	}
 	if strings.HasSuffix(state, "urgent") {
-		title := fmt.Sprintf("【紧急】%s %s配额将浪费 %s", providerCN(name), winCN, wasteStr)
+		title := fmt.Sprintf("【紧急】%s %s配额将浪费 %s", provName, winCN, wasteStr)
 		msg := fmt.Sprintf("%s配额 %s 后重置,剩余 %.0f%%。\n"+
 			"按当前使用速率,重置时预计还有 %s 额度用不完。\n"+
 			"要用的活儿抓紧安排!\n\n%s",
@@ -267,7 +279,7 @@ func formatAlert(name model.Provider, snap *model.Snapshot, state, weeklyLevel s
 		return title, msg, urgentPrio
 	}
 	if strings.HasSuffix(state, "notice") {
-		title := fmt.Sprintf("【提醒】%s %s配额预计用不完(剩 %s)", providerCN(name), winCN, wasteStr)
+		title := fmt.Sprintf("【提醒】%s %s配额预计用不完(剩 %s)", provName, winCN, wasteStr)
 		msg := fmt.Sprintf("%s配额 %s 后重置,剩余 %.0f%%,按当前速率预计浪费 %s。\n"+
 			"有需要的话可以加把劲。\n\n%s",
 			winCN, until, leftPct, wasteStr, detail)

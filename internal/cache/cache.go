@@ -51,11 +51,19 @@ type Entry struct {
 
 // AppendSample adds a usage sample, pruning to keep at most maxSamples
 // (default enough for ~7 days of 5-minute samples).
+//
+//	label 空 → 等同 AppendSample(provider, s, max)(老路径);非空 →
+//	写到 "<provider>/<label>" 这条 Entry(多 key 场景)。
 func (f *File) AppendSample(provider model.Provider, s Sample, maxSamples int) {
-	e := f.Entries[string(provider)]
+	f.appendSample(provider, "", s, maxSamples)
+}
+
+func (f *File) appendSample(provider model.Provider, label string, s Sample, maxSamples int) {
+	key := keyFor(provider, label)
+	e := f.Entries[key]
 	if e == nil {
 		e = &Entry{}
-		f.Entries[string(provider)] = e
+		f.Entries[key] = e
 	}
 	e.History = append(e.History, s)
 	if maxSamples <= 0 {
@@ -64,6 +72,21 @@ func (f *File) AppendSample(provider model.Provider, s Sample, maxSamples int) {
 	if len(e.History) > maxSamples {
 		e.History = e.History[len(e.History)-maxSamples:]
 	}
+}
+
+// keyFor 把 (provider, label) 编码成 Entries map 的 key。
+//
+//	label 空 或 "default" → 只用 provider 名(向后兼容老 cache.json 与
+//	顶层 default Key);其他 label → "<provider>/<label>",保证不会与
+//	默认 key 冲突。
+//
+//	"default" 与 "" 等价:ProviderKeys 把顶层 Token 规范化为
+//	label="default",存储路径必须和老格式 single-key 用户保持一致。
+func keyFor(provider model.Provider, label string) string {
+	if label == "" || label == "default" {
+		return string(provider)
+	}
+	return string(provider) + "/" + label
 }
 
 type File struct {
@@ -134,14 +157,34 @@ func (s *Store) Save(f *File) error {
 	return nil
 }
 
-// Get returns the entry for a provider (nil when absent).
+// Get returns the entry for a provider's default key (label 空)。
+// 拿到 nil 时不代表"该 provider 没缓存",可能是 [[keys]] 里某个 label
+// 才有缓存 — 多 key 场景用 GetLabeled。
 func (f *File) Get(provider model.Provider) *Entry {
 	return f.Entries[string(provider)]
 }
 
-// Set stores/updates an entry.
+// Set stores/updates an entry for the default key(label 空)。
 func (f *File) Set(provider model.Provider, e *Entry) {
 	f.Entries[string(provider)] = e
+}
+
+// GetLabeled returns the entry for a (provider, label) pair. 多 key
+// 场景使用;label 为空时回落到 Get(provider)。
+func (f *File) GetLabeled(provider model.Provider, label string) *Entry {
+	return f.Entries[keyFor(provider, label)]
+}
+
+// SetLabeled stores/updates an entry for a (provider, label) pair。
+// Label 空 → 写入 provider 名下(等同 Set)。
+func (f *File) SetLabeled(provider model.Provider, label string, e *Entry) {
+	f.Entries[keyFor(provider, label)] = e
+}
+
+// Entries returns the underlying map (read-only by convention; callers must
+// not mutate returned *Entry pointers in place without saving back).
+func (f *File) EntriesByLabel() map[string]*Entry {
+	return f.Entries
 }
 
 // Fresh reports whether the entry's snapshot is younger than ttl.

@@ -25,7 +25,9 @@ var statusCmd = &cobra.Command{
 		"想看某个特定 provider,显式写 `submon status <provider>`,未配置\n" +
 		"的会显示原因。\n\n" +
 		"provider: zhipu | minimax | opencode | kimi。省略则仅展示已配置的。\n" +
-		"缓存未过期时直接读缓存;--force 强制刷新并更新缓存。",
+		"缓存未过期时直接读缓存;--force 强制刷新并更新缓存。\n\n" +
+		"多 key 场景:同一 provider 配置了多个 [[keys]] 时,每个 key 单独\n" +
+		"展示一段(标题里带 label)。",
 	Args: cobra.MaximumNArgs(1),
 	ValidArgs: func() []string {
 		var names []string
@@ -56,29 +58,69 @@ var statusCmd = &cobra.Command{
 		ttl := time.Duration(cfg.Cache.TTLSeconds) * time.Second
 		ctx := context.Background()
 
+		// 每个 (provider, label) 一条 row。多 key 场景:同一 provider
+		// 多个 label 各占一条。
 		type row struct {
-			snap *model.Snapshot
-			err  error
+			provider model.Provider
+			label    string
+			snap     *model.Snapshot
+			err      error
+			cached   bool
 		}
 		var rows []row
 		for _, name := range names {
-			e := file.Get(name)
-			if statusForce || !e.Fresh(ttl) {
-				res := refresh.One(ctx, name, cfg, nil)
-				r := row{snap: res.Snapshot, err: res.Err}
+			keys := cfg.ProviderKeys(name)
+			if len(keys) == 0 {
+				// env 兜底:仍按单 key 旧语义显示,免得完全无反馈。
+				e := file.Get(name)
+				r := row{provider: name, label: "default"}
+				if statusForce || !e.Fresh(ttl) {
+					res := refresh.One(ctx, name, cfg, nil)
+					r.snap, r.err = res.Snapshot, res.Err
+				} else if e != nil && e.Snapshot != nil {
+					r.snap = e.Snapshot
+					r.cached = true
+				} else if e != nil && e.LastErr != "" {
+					r.err = fmt.Errorf("%s(缓存)", e.LastErr)
+					r.cached = true
+				}
 				if r.snap == nil && r.err == nil {
 					r.err = fmt.Errorf("获取失败")
 				}
 				rows = append(rows, r)
 				continue
 			}
-			r := row{}
-			if e.Snapshot != nil {
-				r.snap = e.Snapshot
-			} else if e.LastErr != "" {
-				r.err = fmt.Errorf("%s(缓存)", e.LastErr)
+			for _, k := range keys {
+				e := file.GetLabeled(name, k.Label)
+				r := row{provider: name, label: k.Label}
+				if statusForce || !e.Fresh(ttl) {
+					// 单 Key 刷新:走 BuildOne 而非 Many(后者会触发 N 次
+					// HTTP — 这里每条 row 单独 fetch,与 Many 等价但
+					// 失败粒度更细)。
+					src, _, err := providerBuildOne(name, k.Label, cfg)
+					if err != nil {
+						r.err = err
+					} else {
+						snap, ferr := src.Fetch(ctx)
+						if ferr != nil {
+							r.err = ferr
+						} else {
+							snap.KeyLabel = k.Label
+							r.snap = snap
+						}
+					}
+				} else if e != nil && e.Snapshot != nil {
+					r.snap = e.Snapshot
+					r.cached = true
+				} else if e != nil && e.LastErr != "" {
+					r.err = fmt.Errorf("%s(缓存)", e.LastErr)
+					r.cached = true
+				}
+				if r.snap == nil && r.err == nil {
+					r.err = fmt.Errorf("获取失败")
+				}
+				rows = append(rows, r)
 			}
-			rows = append(rows, r)
 		}
 
 		if statusJSON {
@@ -112,8 +154,8 @@ var statusCmd = &cobra.Command{
 				continue
 			}
 			failed = true
-			fmt.Fprintf(cmd.OutOrStdout(), "%s %s 未配置或不可用: %v\n",
-				providerBadge(names[i]), ansiDim, r.err)
+			fmt.Fprintf(cmd.OutOrStdout(), "%s %s %s 未配置或不可用: %v\n",
+				providerBadge(r.provider), r.label, ansiDim, r.err)
 		}
 		if failed {
 			return fmt.Errorf("部分 provider 不可用")
@@ -144,21 +186,28 @@ func targetProviders(args []string, cfg *config.Config) ([]model.Provider, error
 	return out, nil
 }
 
-// providerConfigured 判断 provider 是否已配 token。BaseURL 是可选的,
-// 不参与。这里 cfg 必须是 loadDecryptedConfig 的产物(encrypted 已展开),
-// 否则 enc:v1:... 会被误判为"已配置"。
+// providerConfigured 判断 provider 是否至少有一个已配置 Key。
+// 顶层 Token 或 [[keys]] 任一非空即算。这里 cfg 必须是 loadDecryptedConfig
+// 的产物(encrypted 已展开),否则 enc:v1:... 会被误判为"已配置"。
 func providerConfigured(p model.Provider, cfg *config.Config) bool {
-	switch p {
-	case model.ProviderZhipu:
-		return cfg.Zhipu.Token != ""
-	case model.ProviderMinimax:
-		return cfg.MiniMax.Token != ""
-	case model.ProviderOpenCode:
-		return cfg.OpenCode.Token != ""
-	case model.ProviderKimi:
-		return cfg.Kimi.Token != ""
-	}
-	return false
+	return len(cfg.ProviderKeys(p)) > 0
+}
+
+// providerBuildOne 是 provider.BuildOne 的薄封装 — 把 cmd 与 provider
+// 包解耦,避免在 status.go 直接 import provider。
+func providerBuildOne(name model.Provider, label string, cfg *config.Config) (labeledFetchable, string, error) {
+	src, lbl, err := providerBuildByName(name, label, cfg)
+	return src, lbl, err
+}
+
+// providerBuildByName 是 status.go → provider.BuildOne 的桥接变量,
+// 测试时可替换成 stub(避免真实 HTTP)。默认调用 realProviderBuildOne。
+var providerBuildByName func(name model.Provider, label string, cfg *config.Config) (labeledFetchable, string, error) = realProviderBuildOne
+
+// labeledFetchable 是 status.go 与 provider.Source 之间的最小接口,
+// 测试时可替换。
+type labeledFetchable interface {
+	Fetch(ctx context.Context) (*model.Snapshot, error)
 }
 
 func init() {

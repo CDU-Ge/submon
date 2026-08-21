@@ -10,23 +10,43 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/ge/subscription-monitor/internal/model"
 	"github.com/ge/subscription-monitor/internal/secret"
 )
 
+// ProviderKey 是同一 provider 下的"一个账号/一套凭据"。
+//
+//	Label    用户可读标签,用于面板区分("alice" / "公司" / "default")。
+//	         空 Label 在 ProviderKeys 阶段会被规范化为 "default" 或 "key-N"。
+//	Token    与 provider 顶层 Token 同语义,加密或明文。
+//	BaseURL  可选覆盖;空时回落到 provider 顶层 BaseURL,再回落到内置默认。
+//
+//	同一 provider 允许多个 Key — 同一账号多 key(轮换)、多账号(主备)
+//	都属此情形。ProviderKeys 是读取入口,合并顶层"default" 槽位与 [[keys]]。
+type ProviderKey struct {
+	Label   string `toml:"label"`
+	Token   string `toml:"token"`
+	BaseURL string `toml:"base_url,omitempty"`
+}
+
 type Config struct {
 	Zhipu struct {
-		BaseURL string `toml:"base_url"`
-		Token   string `toml:"token"`
+		BaseURL string        `toml:"base_url"`
+		Token   string        `toml:"token"`
+		Keys    []ProviderKey `toml:"keys,omitempty"`
 	} `toml:"zhipu"`
 	MiniMax struct {
-		Token string `toml:"token"`
+		Token string        `toml:"token"`
+		Keys  []ProviderKey `toml:"keys,omitempty"`
 	} `toml:"minimax"`
 	OpenCode struct {
-		Token string `toml:"token"`
+		Token string        `toml:"token"`
+		Keys  []ProviderKey `toml:"keys,omitempty"`
 	} `toml:"opencode"`
 	Kimi struct {
-		BaseURL string `toml:"base_url"`
-		Token   string `toml:"token"`
+		BaseURL string        `toml:"base_url"`
+		Token   string        `toml:"token"`
+		Keys    []ProviderKey `toml:"keys,omitempty"`
 	} `toml:"kimi"`
 	Cache struct {
 		// TTLSeconds is how long a fetched snapshot is served from cache.
@@ -210,6 +230,10 @@ func envOr(key, fallback string) string {
 // DecryptSecrets decrypts encrypted token fields in place. Plaintext values
 // pass through. Returns the first decryption error encountered (fields stay
 // as-is when decryption fails).
+//
+// 覆盖范围:每个 provider 的顶层 Token + [[keys]] 数组里每条 Key.Token。
+// 顶层 Key 先按 provider 顺序解,再统一扫一遍 Keys(数组顺序在所有
+// provider 之间连号,错误时仍记录首条不中断)。
 func (c *Config) DecryptSecrets() error {
 	fields := []*string{&c.Zhipu.Token, &c.MiniMax.Token, &c.OpenCode.Token, &c.Kimi.Token, &c.Notify.Gotify.AppToken}
 	var firstErr error
@@ -227,5 +251,110 @@ func (c *Config) DecryptSecrets() error {
 		}
 		*f = pt
 	}
+	for _, k := range c.allKeyTokens() {
+		v := *k
+		if !secret.IsEncrypted(v) {
+			continue
+		}
+		pt, err := secret.Decrypt(v)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		*k = pt
+	}
 	return firstErr
+}
+
+// allKeyTokens 收集所有 [[provider.keys]] 的 token 字段指针。
+// 调用方负责解密后写回(指针原位修改)。
+func (c *Config) allKeyTokens() []*string {
+	var out []*string
+	for _, k := range c.Zhipu.Keys {
+		out = append(out, &k.Token)
+	}
+	for _, k := range c.MiniMax.Keys {
+		out = append(out, &k.Token)
+	}
+	for _, k := range c.OpenCode.Keys {
+		out = append(out, &k.Token)
+	}
+	for _, k := range c.Kimi.Keys {
+		out = append(out, &k.Token)
+	}
+	return out
+}
+
+// ProviderKeys 返回 provider 的全部已配置 Key。规则:
+//
+//  1. 顶层 Token 非空 → 规范化为 label = "default" 的 Key(向老格式兼容)。
+//  2. [[keys]] 里的每条:空 label 自动编号 "key-N"(N 从 1 起,跨 provider 全局唯一
+//     仅按当前 provider 计数);非空 label 保留用户给定值。
+//  3. 同 label 出现多次:后面的覆盖前面(防止两份配置 merge 时悄无声息)。
+//  4. 返回值不含空 token 的 Key,调用方拿到的都是"至少有 Token 的" 列表。
+//
+// 调用方拿到的是副本,修改不影响 Config。
+func (c *Config) ProviderKeys(p model.Provider) []ProviderKey {
+	switch p {
+	case model.ProviderZhipu:
+		return mergeKeys(c.Zhipu.Token, c.Zhipu.Keys)
+	case model.ProviderMinimax:
+		return mergeKeys(c.MiniMax.Token, c.MiniMax.Keys)
+	case model.ProviderOpenCode:
+		return mergeKeys(c.OpenCode.Token, c.OpenCode.Keys)
+	case model.ProviderKimi:
+		return mergeKeys(c.Kimi.Token, c.Kimi.Keys)
+	}
+	return nil
+}
+
+// mergeKeys 合并顶层 default token 与 [[keys]] 数组。
+//
+// 语义:
+//   - 顶层 Token 总是规范化为 Label="default",并放在第一位。
+//   - [[keys]] 里的空 Token 跳过(无效配置)。
+//   - 空 Label 自动编号 "key-N"(N 在当前合并列表中递增;与 default
+//     的 "default" 不冲突,也不冲突用户给的固定 label)。
+//   - 同 Label 出现多次:后者覆盖前者(TOML 里后写的赢),原位替换,顺序保留。
+func mergeKeys(defaultToken string, keys []ProviderKey) []ProviderKey {
+	out := make([]ProviderKey, 0, len(keys)+1)
+	if defaultToken != "" {
+		out = append(out, ProviderKey{Label: "default", Token: defaultToken})
+	}
+	autoLabels := map[string]bool{}
+	for _, k := range keys {
+		if k.Token == "" {
+			continue
+		}
+		label := k.Label
+		if label == "" {
+			label = nextAutoLabel(autoLabels)
+		}
+		k.Label = label
+		replaced := false
+		for i := range out {
+			if out[i].Label == label {
+				out[i] = k
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// nextAutoLabel 找一个未用过的 "key-N" 标签,N 从 1 递增。
+func nextAutoLabel(used map[string]bool) string {
+	for n := 1; ; n++ {
+		l := fmt.Sprintf("key-%d", n)
+		if !used[l] {
+			used[l] = true
+			return l
+		}
+	}
 }

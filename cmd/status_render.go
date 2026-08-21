@@ -47,15 +47,21 @@ func miniBar(pct float64, width int) string {
 
 // renderStatus prints the human-rich panel view for one provider:
 //
-//	ZHIPU · pro  fetched 3m ago
+//	ZHIPU/alice · pro  fetched 3m ago
 //	────────────────────────────────────────────────
 //	  5h          ██████████░░  83% left · 2h29m
 //	  weekly      █████████░░░  77% left · 5d11h
 //	  monthly     ████████████ 100% left · 15d11h · 1.0K/1.0K
 //	  MCP/tools   1.0K / 1.0K remaining
 //	  models 24h  GLM-5.3 61.6M · GLM-4.7 122.9K
+//
+// 多 key 场景:标题里带 label(如 "ZHIPU/alice"),让用户区分多个账号。
+// 单 key 场景:label 是 "default" 或空,标题保持 "ZHIPU" — 与历史一致。
 func renderStatus(w io.Writer, s *model.Snapshot, now time.Time, cfg *config.Config) {
 	title := providerBadge(s.Provider)
+	if lbl := s.KeyLabel; lbl != "" && lbl != "default" {
+		title += ansiWhite + "/" + ansiReset + ansiMagenta + lbl + ansiReset
+	}
 	if s.PlanLevel != "" {
 		title += ansiWhite + " · " + ansiReset + s.PlanLevel
 	}

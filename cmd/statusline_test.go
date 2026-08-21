@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ge/subscription-monitor/internal/cache"
 	"github.com/ge/subscription-monitor/internal/config"
 	"github.com/ge/subscription-monitor/internal/model"
 )
@@ -357,4 +358,101 @@ func TestProviderBadgeDefaultOff(t *testing.T) {
 		t.Errorf("default badge off — got %q should not contain ansiCyan", got)
 	}
 	_ = snap // snap shape lock — 留作未来更细的断言入口
+}
+
+// TestQuotaSegmentForProviderMultiKey 多 key 场景:同 provider 两个 key
+// 在 cache 里有 snapshot,渲染时两段并列,各自窗口可见。
+//
+// 用 cache.File 直接塞两条 entries 模拟 "watch 跑过后" 的状态,避免 mock HTTP。
+func TestQuotaSegmentForProviderMultiKey(t *testing.T) {
+	cfg := config.Default()
+	cfg.Kimi.Keys = []config.ProviderKey{
+		{Label: "alice", Token: "tk-a"},
+		{Label: "bob", Token: "tk-b"},
+	}
+
+	// 直接写 cache。
+	dir := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", dir)
+	cp, _ := cfg.CachePath()
+	store := cache.New(cp)
+	f := &cache.File{Entries: map[string]*cache.Entry{}}
+
+	rem := 70.0
+	reset := time.Now().Add(2 * time.Hour)
+	makeSnap := func(label string, pct float64) *model.Snapshot {
+		s := &model.Snapshot{
+			Provider:  model.ProviderKimi,
+			KeyLabel:  label,
+			FetchedAt: time.Now(),
+			ShortWindow: &model.Window{
+				Label: "5h", RemainingPct: &pct, ResetAt: &reset,
+			},
+		}
+		return s
+	}
+	f.SetLabeled(model.ProviderKimi, "alice", &cache.Entry{
+		Snapshot: makeSnap("alice", rem), FetchedAt: time.Now(),
+	})
+	f.SetLabeled(model.ProviderKimi, "bob", &cache.Entry{
+		Snapshot: makeSnap("bob", 90), FetchedAt: time.Now(),
+	})
+	if err := store.Save(f); err != nil {
+		t.Fatal(err)
+	}
+
+	out := quotaSegmentForProvider(cfg, model.ProviderKimi, time.Now())
+
+	// 多 key 段间用 " | " 分隔;每段前贴 label(magenta)。
+	if !strings.Contains(out, "alice") {
+		t.Errorf("multi-key output missing alice label: %s", out)
+	}
+	if !strings.Contains(out, "bob") {
+		t.Errorf("multi-key output missing bob label: %s", out)
+	}
+	if !strings.Contains(out, ansiMagenta) {
+		t.Errorf("label should be magenta: %s", out)
+	}
+	if !strings.Contains(out, "70%") || !strings.Contains(out, "90%") {
+		t.Errorf("both percentages should appear: %s", out)
+	}
+	if !strings.Contains(out, "|") {
+		t.Errorf("multi-key should have | separator: %s", out)
+	}
+}
+
+// TestQuotaSegmentForProviderSingleKeyNoLabel 单 key 场景:不显示 label
+// 与历史一致(单 key 老用户不应看到 "default" 字符串)。
+func TestQuotaSegmentForProviderSingleKeyNoLabel(t *testing.T) {
+	cfg := config.Default()
+	cfg.Kimi.Token = "tk-only"
+
+	dir := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", dir)
+	cp, _ := cfg.CachePath()
+	store := cache.New(cp)
+	f := &cache.File{Entries: map[string]*cache.Entry{}}
+	rem := 70.0
+	reset := time.Now().Add(2 * time.Hour)
+	f.Set(model.ProviderKimi, &cache.Entry{
+		Snapshot: &model.Snapshot{
+			Provider: model.ProviderKimi, FetchedAt: time.Now(),
+			ShortWindow: &model.Window{Label: "5h", RemainingPct: &rem, ResetAt: &reset},
+		},
+		FetchedAt: time.Now(),
+	})
+	if err := store.Save(f); err != nil {
+		t.Fatal(err)
+	}
+
+	out := quotaSegmentForProvider(cfg, model.ProviderKimi, time.Now())
+	if strings.Contains(out, "default") {
+		t.Errorf("single-key should NOT show 'default' label: %s", out)
+	}
+	if !strings.Contains(out, "70%") {
+		t.Errorf("pct missing: %s", out)
+	}
+	if strings.Contains(out, "|") {
+		t.Errorf("single-key should not have | separator: %s", out)
+	}
 }

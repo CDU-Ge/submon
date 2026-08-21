@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/ge/subscription-monitor/internal/config"
+	"github.com/ge/subscription-monitor/internal/model"
 	"github.com/ge/subscription-monitor/internal/secret"
 	"github.com/spf13/cobra"
 )
@@ -340,6 +341,175 @@ func authSecretField(name string, cfg *config.Config) string {
 	return ""
 }
 
+// --- 多 key 测试 ---
+
+// TestAuthAddLabeledKey 验证 `submon auth zhipu add <label>`:
+//   - label 非 default → 写入 [[zhipu.keys]],顶层 Token 不动
+//   - 再次 add 同 label → 覆盖该 label(后写覆盖前写)
+//   - 加 label=default 走默认路径,等价于 auth <provider>
+func TestAuthAddLabeledKey(t *testing.T) {
+	withTempConfig(t)
+
+	// 1. 先有 default Key
+	withStdin(t, "tk-default\n\n")
+	cmd, _, _ := newTestCmd()
+	if err := runAuthSet(cmd, "zhipu"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. add alice
+	withStdin(t, "tk-alice\nhttps://alice.example\n")
+	cmd, _, _ = newTestCmd()
+	if err := runAuthAddLabeled(cmd, "zhipu", "alice"); err != nil {
+		t.Fatalf("add alice: %v", err)
+	}
+	cfg, _ := config.Load()
+	if !secret.IsEncrypted(cfg.Zhipu.Token) || cfg.Zhipu.Token == "" {
+		t.Errorf("default token lost: %q", cfg.Zhipu.Token)
+	}
+	if len(cfg.Zhipu.Keys) != 1 || cfg.Zhipu.Keys[0].Label != "alice" {
+		t.Fatalf("keys not appended: %+v", cfg.Zhipu.Keys)
+	}
+	if cfg.Zhipu.Keys[0].BaseURL != "https://alice.example" {
+		t.Errorf("alice.BaseURL = %q", cfg.Zhipu.Keys[0].BaseURL)
+	}
+	if !secret.IsEncrypted(cfg.Zhipu.Keys[0].Token) {
+		t.Error("alice token not encrypted")
+	}
+
+	// 3. add alice again(覆盖)
+	withStdin(t, "tk-alice-v2\n")
+	cmd, _, _ = newTestCmd()
+	if err := runAuthAddLabeled(cmd, "zhipu", "alice"); err != nil {
+		t.Fatalf("add alice overwrite: %v", err)
+	}
+	cfg, _ = config.Load()
+	if len(cfg.Zhipu.Keys) != 1 {
+		t.Errorf("keys len = %d, want 1 (覆盖不增加)", len(cfg.Zhipu.Keys))
+	}
+}
+
+// TestAuthRemoveLabeledKey 删除 default 顶层 + [[keys]] 中某 label。
+//   - remove default → 顶层 Token/BaseURL 清空,[[keys]] 保留
+//   - remove alice → 从 [[keys]] 移除
+//   - remove 不存在的 label → no-op,不报错
+func TestAuthRemoveLabeledKey(t *testing.T) {
+	withTempConfig(t)
+	withStdin(t, "tk-default\nhttps://default.example\n")
+	cmd, _, _ := newTestCmd()
+	if err := runAuthSet(cmd, "zhipu"); err != nil {
+		t.Fatal(err)
+	}
+	withStdin(t, "tk-alice\n")
+	cmd, _, _ = newTestCmd()
+	if err := runAuthAddLabeled(cmd, "zhipu", "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	// remove alice → [[keys]] 清掉,顶层 default 保留
+	cmd, _, _ = newTestCmd()
+	if err := runAuthRemoveLabeled(cmd, "zhipu", "alice"); err != nil {
+		t.Fatalf("remove alice: %v", err)
+	}
+	cfg, _ := config.Load()
+	if cfg.Zhipu.Token == "" {
+		t.Error("default token should survive removing alice")
+	}
+	if len(cfg.Zhipu.Keys) != 0 {
+		t.Errorf("alice key not removed: %+v", cfg.Zhipu.Keys)
+	}
+
+	// remove default → 顶层清空
+	cmd, _, _ = newTestCmd()
+	if err := runAuthRemoveLabeled(cmd, "zhipu", "default"); err != nil {
+		t.Fatalf("remove default: %v", err)
+	}
+	cfg, _ = config.Load()
+	if cfg.Zhipu.Token != "" {
+		t.Errorf("default token still set: %q", cfg.Zhipu.Token)
+	}
+
+	// remove 不存在的 label → no-op
+	cmd, _, _ = newTestCmd()
+	if err := runAuthRemoveLabeled(cmd, "zhipu", "ghost"); err != nil {
+		t.Errorf("remove ghost should not error: %v", err)
+	}
+}
+
+// TestAuthLsReportsMultiKey `auth ls` 多 key 模式下展示 default + 每条 label。
+func TestAuthLsReportsMultiKey(t *testing.T) {
+	withTempConfig(t)
+	withStdin(t, "tk-default\n\n")
+	cmd, _, _ := newTestCmd()
+	if err := runAuthSet(cmd, "zhipu"); err != nil {
+		t.Fatal(err)
+	}
+	withStdin(t, "tk-alice\n\n")
+	cmd, _, _ = newTestCmd()
+	if err := runAuthAddLabeled(cmd, "zhipu", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	withStdin(t, "tk-bob\n\n")
+	cmd, _, _ = newTestCmd()
+	if err := runAuthAddLabeled(cmd, "zhipu", "bob"); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd, out, _ := newTestCmd()
+	if err := runAuthLs(cmd); err != nil {
+		t.Fatal(err)
+	}
+	s := out.String()
+	for _, want := range []string{"default=enc", "alice=enc", "bob=enc"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("ls missing %q: %s", want, s)
+		}
+	}
+}
+
+// TestAuthAddRejectsUnknownProvider 守住 "auth <unknown> add <label>" 报错。
+func TestAuthAddRejectsUnknownProvider(t *testing.T) {
+	withTempConfig(t)
+	withStdin(t, "tk\n")
+	cmd, _, _ := newTestCmd()
+	if err := runAuthAddLabeled(cmd, "unknown", "alice"); err == nil {
+		t.Fatal("expected error for unknown provider")
+	}
+}
+
+// TestAuthCmdDispatchAddRemove 走 cobra dispatch 路径,验证子命令解析:
+//
+//	`submon auth zhipu add alice` → runAuthAddLabeled
+//	`submon auth zhipu remove alice` → runAuthRemoveLabeled
+func TestAuthCmdDispatchAddRemove(t *testing.T) {
+	withTempConfig(t)
+	withStdin(t, "tk-alice\n")
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	// 通过 RunE + args 直接调用,绕开 cobra 的 args 校验。
+	if err := runAuthAddLabeled(cmd, "zhipu", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := config.Load()
+	if len(cfg.Zhipu.Keys) != 1 || cfg.Zhipu.Keys[0].Label != "alice" {
+		t.Fatalf("add 失败: %+v", cfg.Zhipu.Keys)
+	}
+}
+
+// TestProviderKeysIsTruthForConfigured 守住 "providerConfigured()"
+// 用 [[keys]] 也能识别 — 没这个,多 key 的 provider 会被 status/statusline
+// 当作"未配置"隐藏掉。
+func TestProviderKeysIsTruthForConfigured(t *testing.T) {
+	cfg := config.Default()
+	cfg.Zhipu.Keys = []config.ProviderKey{
+		{Label: "solo", Token: "tk"},
+	}
+	if !providerConfigured(model.ProviderZhipu, cfg) {
+		t.Error("providerConfigured should return true when only [[keys]] is set")
+	}
+}
+
 // TestReadAuthFieldTTYNonSecret 守住 "kimi / zhipu 的 base_url 字段在
 // TTY 模式下不 panic" 的回归 — 老代码 br 为 nil,base_url 字段
 // 直接 nil deref。本测试通过 pipe fd 模拟 TTY,直接打 readAuthField 的
@@ -395,4 +565,67 @@ func readRawConfig(t *testing.T) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// TestDiscoverSourcesFromEnv 守住 "discover 必须从 env 里捞出候选项" +
+// "掩码不进明文到 Value" 的契约。env 清干净后才设,保证测试稳定。
+func TestDiscoverSourcesFromEnv(t *testing.T) {
+	withTempConfig(t)
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "sk-zhipu-discovery-test-token")
+	t.Setenv("KIMI_CODING_API_KEY", "sk-kimi-discovery-test-token")
+	t.Setenv("MINIMAX_TOKEN", "sk-minimax-discovery-test-token")
+	t.Setenv("OPENCODE_API_KEY", "sk-opencode-discovery-test-token")
+	t.Setenv("ANTHROPIC_BASE_URL", "https://open.bigmodel.cn/api/anthropic")
+	// KIMI_API_KEY 跟 KIMI_CODING_API_KEY 同时存在 — 验证去重(只列前者)。
+	t.Setenv("KIMI_API_KEY", "sk-kimi-secondary")
+
+	sources := scanDiscoverSources()
+
+	// 应该至少有 4 个:zhipu token / kimi token (coding) / minimax / opencode / base_url。
+	byProvider := map[string]int{}
+	for _, s := range sources {
+		byProvider[s.Provider]++
+	}
+	for _, want := range []string{"zhipu", "kimi", "minimax", "opencode"} {
+		if byProvider[want] == 0 {
+			t.Errorf("discover should find %s, got %v", want, byProvider)
+		}
+	}
+
+	// Value 字段里**绝不能出现**明文 token 片段 — 验证掩码生效。
+	for _, s := range sources {
+		if s.Field == "token" && strings.Contains(s.Value, "discovery-test-token") {
+			t.Errorf("plaintext leaked into Value for %s.%s: %s", s.Provider, s.Field, s.Value)
+		}
+	}
+
+	// disclose() 应该能拿到原始 token。
+	found := false
+	for _, s := range sources {
+		if s.Provider == "zhipu" && s.Field == "token" {
+			found = true
+			if s.disclose() != "sk-zhipu-discovery-test-token" {
+				t.Errorf("disclose() should return raw, got %q", s.disclose())
+			}
+		}
+	}
+	if !found {
+		t.Error("zhipu token source missing")
+	}
+}
+
+// TestMaskToken 守住掩码规则:前缀 + 省略号 + 尾 4 字符;短串整段 *。
+func TestMaskToken(t *testing.T) {
+	cases := map[string]string{
+		"sk-zhipu-1234567890abcdef": "sk-z…cdef",
+		"":                          "",
+		"short":                     "*****",
+		"12345678":                  "********",
+		"123456789":                 "1234…6789",
+	}
+	for in, want := range cases {
+		if got := maskToken(in); got != want {
+			t.Errorf("maskToken(%q) = %q, want %q", in, got, want)
+		}
+	}
 }

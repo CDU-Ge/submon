@@ -82,6 +82,9 @@ func (w *Window) PredictedWastePct(now time.Time) *float64 {
 // Snapshot is the normalized state of one provider at a point in time.
 type Snapshot struct {
 	Provider Provider `json:"provider"`
+	// KeyLabel 标识此 snapshot 来自 provider 的哪个 Key(多 key 模式下)。
+	// 空 = 默认 Key,与单 key 老格式保持兼容。
+	KeyLabel string `json:"key_label,omitempty"`
 	// PlanLevel is the subscription tier when known (e.g. Zhipu "pro", MiniMax plan name).
 	PlanLevel string `json:"plan_level,omitempty"`
 	// ShortWindow is the ~5-hour rolling token window.

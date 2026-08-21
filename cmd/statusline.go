@@ -151,6 +151,7 @@ func quotaMinimalSegment(cfg *config.Config, now time.Time) string {
 }
 
 // quotaWindowSegs 抽出各窗口渲染:verbose=true 带标签与倒计时,极简只留 %。
+// 多 key 场景:每个 Key 独立渲染,段间用 " | " 分隔 — 与 layout A 对齐。
 func quotaWindowSegs(cfg *config.Config, now time.Time, verbose bool) []string {
 	name, err := resolveStatuslineProvider(cfg)
 	if err != nil {
@@ -164,45 +165,63 @@ func quotaWindowSegs(cfg *config.Config, now time.Time, verbose bool) []string {
 	if err != nil {
 		return nil
 	}
-	entry := file.Get(name)
-	if entry == nil || entry.Snapshot == nil {
-		maybeSelfHeal(path, entry, cfg, now)
-		return []string{ansiWhite + "⚡" + badgeText(name) + " 刷新中…" + ansiReset}
-	}
-	s := entry.Snapshot
-	if now.Sub(s.FetchedAt) > time.Duration(cfg.Cache.TTLSeconds)*time.Second {
-		maybeSelfHeal(path, entry, cfg, now)
+
+	keys := cfg.ProviderKeys(name)
+	if len(keys) == 0 {
+		keys = []config.ProviderKey{{Label: "default"}}
 	}
 
-	var segs []string
-	for _, w := range []*model.Window{s.ShortWindow, s.LongWindow} {
-		if w == nil || w.RemainingPct == nil {
+	var perKey [][]string
+	for _, k := range keys {
+		entry := file.GetLabeled(name, k.Label)
+		if entry == nil || entry.Snapshot == nil {
+			maybeSelfHeal(path, entry, cfg, now)
 			continue
 		}
-		label := ""
-		switch w.Label {
-		case "5h":
-			label = "5h"
-		case "week":
-			label = "weekly"
-		default:
-			label = w.Label
+		if now.Sub(entry.Snapshot.FetchedAt) > time.Duration(cfg.Cache.TTLSeconds)*time.Second {
+			maybeSelfHeal(path, entry, cfg, now)
 		}
-		color := pctColor(*w.RemainingPct, cfg)
-		if !verbose {
-			segs = append(segs, color+fmt.Sprintf("%.0f%%", *w.RemainingPct)+ansiReset)
-			continue
+		var segs []string
+		for _, w := range []*model.Window{entry.Snapshot.ShortWindow, entry.Snapshot.LongWindow} {
+			if w == nil || w.RemainingPct == nil {
+				continue
+			}
+			label := ""
+			switch w.Label {
+			case "5h":
+				label = "5h"
+			case "week":
+				label = "weekly"
+			default:
+				label = w.Label
+			}
+			color := pctColor(*w.RemainingPct, cfg)
+			if !verbose {
+				segs = append(segs, color+fmt.Sprintf("%.0f%%", *w.RemainingPct)+ansiReset)
+				continue
+			}
+			seg := fmt.Sprintf("%s %s%.0f%%%s left", ansiWhite+label+ansiReset, color, *w.RemainingPct, ansiReset)
+			if w.ResetAt != nil {
+				seg += fmt.Sprintf(" %s(%s)%s", ansiWhite, humanDuration(time.Until(*w.ResetAt)), ansiReset)
+			}
+			segs = append(segs, seg)
 		}
-		seg := fmt.Sprintf("%s %s%.0f%%%s left", ansiWhite+label+ansiReset, color, *w.RemainingPct, ansiReset)
-		if w.ResetAt != nil {
-			seg += fmt.Sprintf(" %s(%s)%s", ansiWhite, humanDuration(time.Until(*w.ResetAt)), ansiReset)
+		if len(segs) > 0 {
+			// 多 key 时把 label 贴在段首,单 key 与历史一致。
+			if k.Label != "" && k.Label != "default" {
+				segs = append([]string{ansiMagenta + k.Label + ansiReset}, segs...)
+			}
+			perKey = append(perKey, segs)
 		}
-		segs = append(segs, seg)
 	}
-	if len(segs) == 0 {
+	if len(perKey) == 0 {
 		return nil
 	}
-	return segs
+	out := make([]string, 0, len(perKey))
+	for _, s := range perKey {
+		out = append(out, strings.Join(s, ansiWhite+" - "+ansiReset))
+	}
+	return out
 }
 
 // peakHourReminder Zhipu 高峰期提醒。
@@ -242,7 +261,9 @@ func peakHourReminder(cfg *config.Config, now time.Time) string {
 	return fmt.Sprintf("%s高峰%s %s%s%s", ansiWhite, ansiReset, color, humanDuration(remaining), ansiReset)
 }
 
-// freshTrailer: 新鲜度尾标(极简方案用)。
+// freshTrailer: 新鲜度尾标(极简方案用)。多 key 场景:用 default key
+// 的 FetchedAt — 任何 Key 刷新成功就刷新整个 trailer,避免 5h 倒计时
+// 与 weekly 倒计时各挂各的。
 func freshTrailer(cfg *config.Config, now time.Time) string {
 	name, err := resolveStatuslineProvider(cfg)
 	if err != nil {
@@ -678,7 +699,8 @@ func quotaSegment(cfg *config.Config, now time.Time) string {
 }
 
 // quotaSegmentForProvider 渲染指定 provider 的配额段(读缓存)。
-// badge 在"当前模型属于该 provider"时省略(信息冗余)。
+// 多 key 场景:该 provider 配置了 N 个 Key 时,N 个段并列渲染,各自
+// 带 (↻) 新鲜度;单 key 场景与历史一致(不显示 label)。
 func quotaSegmentForProvider(cfg *config.Config, name model.Provider, now time.Time) string {
 	path, err := cfg.CachePath()
 	if err != nil {
@@ -688,20 +710,51 @@ func quotaSegmentForProvider(cfg *config.Config, name model.Provider, now time.T
 	if err != nil {
 		return ""
 	}
-	entry := file.Get(name)
-	if entry == nil || entry.Snapshot == nil {
-		maybeSelfHeal(path, entry, cfg, now)
-		hint := "暂无数据,刷新中…"
-		if entry != nil && entry.LastErr != "" {
-			hint = entry.LastErr
-		}
-		return ansiWhite + badgeText(name) + " " + hint + ansiReset
-	}
-	s := entry.Snapshot
 
+	keys := cfg.ProviderKeys(name)
+	// env 兜底 / 单 key 老路径:keys 为空但 provider 已配 — 用 default 渲染。
+	if len(keys) == 0 {
+		keys = []config.ProviderKey{{Label: "default"}}
+	}
+
+	var segs []string
+	for _, k := range keys {
+		entry := file.GetLabeled(name, k.Label)
+		if entry == nil || entry.Snapshot == nil {
+			segs = append(segs, quotaEmptySegment(name, k.Label, entry, cfg, path, now))
+			continue
+		}
+		segs = append(segs, quotaSegmentForEntry(name, k.Label, entry, cfg, now))
+	}
+	// 多 key 时用 " | " 分隔(段内窗口已用 " - " 分隔),保持视觉对齐。
+	return strings.Join(segs, ansiWhite+" | "+ansiReset)
+}
+
+// quotaEmptySegment 在缓存缺失时生成一段"刷新中"提示。沿用单 key 老
+// 体验,只在 --show-provider 或多 key 时显示 label。
+func quotaEmptySegment(name model.Provider, label string, entry *cache.Entry, cfg *config.Config, cachePath string, now time.Time) string {
+	maybeSelfHeal(cachePath, entry, cfg, now)
+	hint := "暂无数据,刷新中…"
+	if entry != nil && entry.LastErr != "" {
+		hint = entry.LastErr
+	}
+	labelPart := ""
+	if label != "" && label != "default" {
+		labelPart = "/" + label
+	}
+	badge := ""
+	if statuslineShowProvider {
+		badge = ansiWhite + badgeText(name) + labelPart + " " + ansiReset
+	}
+	return badge + ansiWhite + labelPart + " " + hint + ansiReset
+}
+
+// quotaSegmentForEntry 渲染单条 Entry 的配额段(单 key 完整版)。
+func quotaSegmentForEntry(name model.Provider, label string, entry *cache.Entry, cfg *config.Config, now time.Time) string {
+	s := entry.Snapshot
 	ttl := time.Duration(cfg.Cache.TTLSeconds) * time.Second
 	if now.Sub(s.FetchedAt) > ttl {
-		maybeSelfHeal(path, entry, cfg, now)
+		maybeSelfHeal("", entry, cfg, now)
 	}
 
 	var parts []string
@@ -715,16 +768,15 @@ func quotaSegmentForProvider(cfg *config.Config, name model.Provider, now time.T
 		return ""
 	}
 	out := ""
-	// badge 默认关 -- 多 provider 配置切换时容易混淆,看 quota 数字本身
-	// 就够判断状态。调试 / 多 provider 排查时用 --show-provider 或
-	// SUBMON_SHOW_PROVIDER=1 临时打开。
 	if statuslineShowProvider {
 		out = providerBadge(s.Provider) + " "
 	}
-	// 窗口间分隔:与顶层段一致的 " - "。
+	// 多 key 场景:label 非空且非 default 时,贴在段首(数字前)。
+	if label != "" && label != "default" {
+		out += ansiMagenta + label + ansiReset + " "
+	}
 	out += strings.Join(parts, ansiWhite+" - "+ansiReset)
 
-	// 新鲜度:过期显示黄色 age,新鲜显示距下次刷新倒计时。
 	age := now.Sub(s.FetchedAt)
 	switch {
 	case age > ttl:
