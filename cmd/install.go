@@ -204,7 +204,7 @@ func nudgeClaude(cmd *cobra.Command) {
 		}
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), "")
-	fmt.Fprintln(cmd.OutOrStdout(), "提示: 状态栏还没接 Claude Code?跑一次 `submon install claude`")
+	fmt.Fprintln(cmd.OutOrStdout(), "提示: Claude Code 状态栏未接入,运行 `submon install claude` 完成注册")
 }
 
 func uninstallUnits(cmd *cobra.Command) error {

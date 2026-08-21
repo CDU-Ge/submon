@@ -122,7 +122,7 @@ var statusCmd = &cobra.Command{
 					r.cached = true
 				}
 				if r.snap == nil && r.err == nil {
-					r.err = fmt.Errorf("无数据 — 先跑 `submon watch` 拉一次")
+					r.err = fmt.Errorf("无数据 — 先运行 `submon status --force` 获取")
 				}
 				rows = append(rows, r)
 			}
@@ -165,7 +165,7 @@ var statusCmd = &cobra.Command{
 		if len(failed) > 0 {
 			fmt.Fprintln(cmd.ErrOrStderr(), "\n建议:")
 			fmt.Fprintln(cmd.ErrOrStderr(), "  - token 失效:submon auth <provider> 重新配置")
-			fmt.Fprintln(cmd.ErrOrStderr(), "  - 网络抖动:重跑 submon status --force")
+			fmt.Fprintln(cmd.ErrOrStderr(), "  - 网络异常:重新运行 submon status --force")
 			return fmt.Errorf("%d 项 provider 不可用 — 详见上方面板", len(failed))
 		}
 		return nil

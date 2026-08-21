@@ -28,7 +28,7 @@ var watchCmd = &cobra.Command{
 	Use:   "watch",
 	Short: "单次刷新 + 催用提醒(供 systemd timer 调用)",
 	Long: "刷新全部 provider、更新共享缓存;窗口即将重置且剩余额度较多时\n" +
-		"推送「抓紧使用」提醒。设计为每次 timer 触发运行一次。",
+		"推送催用提醒。设计为每次 timer 触发运行一次。",
 	Example: "  submon watch                  # 正常模式(供 systemd timer)\n" +
 		"  submon watch --quiet          # 静默模式(statusline 自愈 fork 用)\n" +
 		"  systemctl --user enable --now submon-watch.timer  # 接入定时器\n" +
@@ -258,24 +258,24 @@ func formatAlert(name model.Provider, label string, snap *model.Snapshot, state,
 	// ── weekly 必然浪费(最高优先级叙事)──
 	if strings.HasPrefix(weeklyLevel, "inevitable") && fate != nil {
 		urgent := weeklyLevel == "inevitable-urgent"
-		conv := fmt.Sprintf("每满载5h窗口约消耗 weekly 的 %.1f%%", fate.MaxBurnPerWindow)
+		conv := fmt.Sprintf("每个满载 5h 窗口约消耗 weekly 的 %.1f%%", fate.MaxBurnPerWindow)
 		if fate.Conservative {
 			conv += "(保守估计,历史样本不足)"
 		}
 		math := fmt.Sprintf(
-			"重置前还能全力投入约 %.1f 个 5h 窗口(按每天最多 3 个,人要休息)\n"+
+			"重置前剩余可用约 %.1f 个 5h 窗口(按每日上限 3 个窗口估算)\n"+
 				"%s\n"+
 				"总消耗能力 ≈ %.0f%% < 剩余 %.0f%%",
 			fate.WindowsLeft, conv, fate.WindowsLeft*fate.MaxBurnPerWindow, *snap.LongWindow.RemainingPct)
 		if urgent {
-			title := fmt.Sprintf("【紧急】%s 每周配额注定浪费 %.0f%%", provName, fate.InevitablePct)
-			msg := fmt.Sprintf("每周配额还剩 %.0f%%,但到重置前无论怎么用都用不完了:\n%s\n"+
-				"预计浪费 %.0f%%。除非大幅提高使用强度,否则这部分就是白交钱。\n\n%s",
+			title := fmt.Sprintf("【紧急】%s 每周配额预计浪费 %.0f%%", provName, fate.InevitablePct)
+			msg := fmt.Sprintf("每周配额剩余 %.0f%%,重置前消耗能力低于剩余额度:\n%s\n"+
+				"预计 %.0f%% 额度未使用即过期。\n\n%s",
 				*snap.LongWindow.RemainingPct, math, fate.InevitablePct, detail)
 			return title, msg, urgentPrio
 		}
 		title := fmt.Sprintf("【提醒】%s 每周配额将浪费 %.0f%%", provName, fate.InevitablePct)
-		msg := fmt.Sprintf("每周配额还剩 %.0f%%,按每天最多 3 个 5h 窗口算,重置前用不完:\n%s\n\n%s",
+		msg := fmt.Sprintf("每周配额剩余 %.0f%%,按每日上限 3 个 5h 窗口估算,重置前无法用完:\n%s\n\n%s",
 			*snap.LongWindow.RemainingPct, math, detail)
 		return title, msg, prio
 	}
@@ -295,9 +295,9 @@ func formatAlert(name model.Provider, label string, snap *model.Snapshot, state,
 	leftPct := *hit.RemainingPct
 
 	if zeroUsage {
-		title := fmt.Sprintf("【提醒】%s %s配额还未使用,即将重置", provName, winCN)
-		msg := fmt.Sprintf("%s配额 %s 后重置,目前剩余 %.0f%% 尚未使用。\n"+
-			"如果这段时间不打算用可以忽略;要用就趁现在。\n\n%s",
+		title := fmt.Sprintf("【提醒】%s %s配额未使用,即将重置", provName, winCN)
+		msg := fmt.Sprintf("%s窗口将于 %s 后重置,当前剩余 %.0f%% 未使用。\n"+
+			"若无使用计划可忽略本提醒。\n\n%s",
 			winCN, until, leftPct, detail)
 		return title, msg, prio
 	}
@@ -308,16 +308,15 @@ func formatAlert(name model.Provider, label string, snap *model.Snapshot, state,
 	}
 	if strings.HasSuffix(state, "urgent") {
 		title := fmt.Sprintf("【紧急】%s %s配额将浪费 %s", provName, winCN, wasteStr)
-		msg := fmt.Sprintf("%s配额 %s 后重置,剩余 %.0f%%。\n"+
-			"按当前使用速率,重置时预计还有 %s 额度用不完。\n"+
-			"要用的活儿抓紧安排!\n\n%s",
+		msg := fmt.Sprintf("%s窗口将于 %s 后重置,剩余 %.0f%%。\n"+
+			"按当前使用速率,重置时预计 %s 额度未消耗。\n\n%s",
 			winCN, until, leftPct, wasteStr, detail)
 		return title, msg, urgentPrio
 	}
 	if strings.HasSuffix(state, "notice") {
 		title := fmt.Sprintf("【提醒】%s %s配额预计用不完(剩 %s)", provName, winCN, wasteStr)
-		msg := fmt.Sprintf("%s配额 %s 后重置,剩余 %.0f%%,按当前速率预计浪费 %s。\n"+
-			"有需要的话可以加把劲。\n\n%s",
+		msg := fmt.Sprintf("%s窗口将于 %s 后重置,剩余 %.0f%%,按当前速率预计浪费 %s。\n"+
+			"如有需要可在重置前提高使用强度。\n\n%s",
 			winCN, until, leftPct, wasteStr, detail)
 		return title, msg, prio
 	}

@@ -143,6 +143,12 @@ var statuslineCmd = &cobra.Command{
 		"  echo '{\"model\":{\"display_name\":\"GLM-5.3\"}}' | submon statusline\n" +
 		"  submon statusline --provider zhipu --show-provider",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Claude Code 经管道捕获 statusline 输出并渲染 ANSI — 非 TTY
+		// 不作为关色依据。PersistentPreRun 已按 TTY 规则算过一次,
+		// 这里翻开关后重算(纯内存运算,秒回预算内)。
+		allowPipeColor = true
+		refreshColorState()
+
 		cfg, err := config.Load()
 		if err != nil {
 			cfg = config.Default() // statusline must never hard-fail
@@ -168,7 +174,7 @@ func isOfficialClaude() bool {
 	return base == "" || strings.Contains(base, "anthropic.com")
 }
 
-// contextPlainSegment: layout B 的上下文段 "ctx 15% used"。
+// contextPlainSegment: layout B 的上下文段 "ctx 已用 15%"。
 func contextPlainSegment(cw contextWindowInfo) string {
 	if cw.TotalInputTokens == nil || cw.ContextWindowSize == nil || *cw.ContextWindowSize <= 0 {
 		return ""
@@ -181,10 +187,10 @@ func contextPlainSegment(cw contextWindowInfo) string {
 		effective = v
 	}
 	pct := float64(*cw.TotalInputTokens) / float64(effective) * 100
-	return fmt.Sprintf("ctx %s%.0f%%%s used", ansiGreen, pct, ansiReset)
+	return fmt.Sprintf("ctx %s已用 %.0f%%%s", ansiGreen, pct, ansiReset)
 }
 
-// quotaDetailedSegment: layout B 的配额段 "5h 72% left (1h9m) · weekly 74% left (5d10h)"。
+// quotaDetailedSegment: layout B 的配额段 "5h 剩 72%（1h9m 后重置） · weekly 剩 74%（5d10h 后重置）"。
 func quotaDetailedSegment(cfg *config.Config, now time.Time) string {
 	segs := quotaWindowSegs(cfg, now, true)
 	return strings.Join(segs, ansiWhite+" · "+ansiReset)
@@ -253,9 +259,9 @@ func quotaWindowSegs(cfg *config.Config, now time.Time, verbose bool) []string {
 				segs = append(segs, color+fmt.Sprintf("%.0f%%", *w.RemainingPct)+ansiReset)
 				continue
 			}
-			seg := fmt.Sprintf("%s %s%.0f%%%s left", ansiWhite+label+ansiReset, color, *w.RemainingPct, ansiReset)
+			seg := fmt.Sprintf("%s %s剩 %.0f%%%s", ansiWhite+label+ansiReset, color, *w.RemainingPct, ansiReset)
 			if w.ResetAt != nil {
-				seg += fmt.Sprintf(" %s(%s)%s", ansiWhite, humanDuration(time.Until(*w.ResetAt)), ansiReset)
+				seg += fmt.Sprintf(" %s(%s 后重置)%s", ansiWhite, humanDuration(time.Until(*w.ResetAt)), ansiReset)
 			}
 			segs = append(segs, seg)
 		}
@@ -347,7 +353,7 @@ func freshTrailer(cfg *config.Config, now time.Time) string {
 //
 //	layout a(默认): ➜ dir git:(main)✗ Model [ctx] 2h50m 81% left weekly 69% left 5d6h (↻3m)
 //	layout a(默认,左稳定→中关心→右变动): submon ⎇main  GLM-5.3  ctx 12.3k/200k 6%  xhigh  fast  5h 4h50m 90%  weekly 53% 4d13h  ↻3m
-//	layout b(信息优先):                       Model · ctx 15% used · dir · ⎇main · 5h 72% left (1h9m) · weekly 74% left (5d10h)
+//	layout b(信息优先):                       Model · ctx 已用 15% · dir · ⎇main · 5h 剩 72%（1h9m 后重置） · weekly 剩 74%（5d10h 后重置）
 //	layout c(极简):                            dir main · 15% · 72%/74% (↻2m)
 func renderStatusline(in *statuslineInput, cfg *config.Config, now time.Time) string {
 	modelName := stripANSI(in.Model.Display)
@@ -518,7 +524,7 @@ func rateLimitToWindow(w rateLimitWindow, label string) *model.Window {
 }
 
 // renderLayoutB: 信息优先 —— model 打头,细粒度分段,branch 用 ⎇ 符号。
-// Model · ctx 15% used · dir · ⎇main · 5h 72% left (1h9m) · weekly 74% left (5d10h)
+// Model · ctx 已用 15% · dir · ⎇main · 5h 剩 72%（1h9m 后重置） · weekly 剩 74%（5d10h 后重置）
 func renderLayoutB(in *statuslineInput, cfg *config.Config, modelName, dir, cwd string, now time.Time) string {
 	var segs []string
 

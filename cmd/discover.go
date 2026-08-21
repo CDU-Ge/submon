@@ -52,7 +52,7 @@ var discoverCmd = &cobra.Command{
 
 func init() {
 	discoverCmd.Flags().BoolVar(&discoverApply, "apply", false, "非交互式:全量导入所有候选项")
-	discoverCmd.Flags().BoolVar(&discoverDryRun, "dry-run", false, "只列出候选项,不落盘")
+	discoverCmd.Flags().BoolVar(&discoverDryRun, "dry-run", false, "只列出候选项,不写入")
 	authCmd.AddCommand(discoverCmd)
 }
 
@@ -71,7 +71,7 @@ func runAuthDiscover(cmd *cobra.Command) error {
 	}
 
 	if discoverDryRun {
-		fmt.Fprintln(cmd.OutOrStdout(), "\n(dry-run:不落盘)")
+		fmt.Fprintln(cmd.OutOrStdout(), "\n(dry-run:不写入)")
 		return nil
 	}
 
@@ -111,7 +111,7 @@ func runAuthDiscover(cmd *cobra.Command) error {
 	if err := config.Save(cfg); err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "\n已加密并落盘 %d 项到 %s\n", imported, mustConfigPath())
+	fmt.Fprintf(cmd.OutOrStdout(), "\n已加密写入 %d 项到 %s\n", imported, mustConfigPath())
 	return nil
 }
 

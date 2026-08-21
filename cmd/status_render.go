@@ -47,16 +47,19 @@ func miniBar(pct float64, width int) string {
 
 // renderStatus prints the human-rich panel view for one provider:
 //
-//	ZHIPU/alice · pro  fetched 3m ago
+//	ZHIPU/alice · pro  3m 前更新
 //	────────────────────────────────────────────────
-//	  5h          ██████████░░  83% left · 2h29m
-//	  weekly      █████████░░░  77% left · 5d11h
-//	  monthly     ████████████ 100% left · 15d11h · 1.0K/1.0K
-//	  MCP/tools   1.0K / 1.0K remaining
-//	  models 24h  GLM-5.3 61.6M · GLM-4.7 122.9K
+//	  5h          ██████████░░  剩 83% · 2h29m 后重置
+//	  weekly      █████████░░░  剩 77% · 5d11h 后重置
+//	  monthly     ████████████  剩 100% · 15d11h 后重置 · 1.0K/1.0K
+//	  MCP/tools   剩余 1.0K / 1.0K
+//	  模型用量 24h  GLM-5.3 61.6M · GLM-4.7 122.9K
 //
 // 多 key 场景:标题里带 label(如 "ZHIPU/alice"),让用户区分多个账号。
 // 单 key 场景:label 是 "default" 或空,标题保持 "ZHIPU" — 与历史一致。
+//
+// 文案口径:窗口名(5h/weekly/MCP)与紧凑时长(2h29m)是数据标签保留原样;
+// 解释性成分(前更新/剩/后重置)一律中文。
 func renderStatus(w io.Writer, s *model.Snapshot, now time.Time, cfg *config.Config) {
 	title := providerBadge(s.Provider)
 	if lbl := s.KeyLabel; lbl != "" && lbl != "default" {
@@ -66,7 +69,7 @@ func renderStatus(w io.Writer, s *model.Snapshot, now time.Time, cfg *config.Con
 		title += ansiWhite + " · " + ansiReset + s.PlanLevel
 	}
 	fmt.Fprintf(w, "%s  %s\n", title,
-		ansiWhite+"fetched "+humanDuration(now.Sub(s.FetchedAt))+" ago"+ansiReset)
+		ansiWhite+humanDuration(now.Sub(s.FetchedAt))+" 前更新"+ansiReset)
 	fmt.Fprintln(w, ansiWhite+strings.Repeat("─", 52)+ansiReset)
 
 	for _, row := range []struct {
@@ -86,37 +89,59 @@ func renderStatus(w io.Writer, s *model.Snapshot, now time.Time, cfg *config.Con
 	}
 	if s.SubscriptionExpiry != nil {
 		days := int(time.Until(*s.SubscriptionExpiry).Hours() / 24)
-		renderStatusLine(w, "expires",
-			fmt.Sprintf("%s · %dd", s.SubscriptionExpiry.Format("2006-01-02"), days))
+		renderStatusLine(w, "到期",
+			fmt.Sprintf("%s（%d 天）", s.SubscriptionExpiry.Format("2006-01-02"), days))
 	}
 	if len(s.Models) > 0 {
 		var parts []string
 		for _, m := range s.Models {
 			parts = append(parts, m.Name+" "+humanInt(m.TotalTokens))
 		}
-		renderStatusLine(w, "models 24h", strings.Join(parts, " · "))
+		renderStatusLine(w, "模型用量 24h", strings.Join(parts, " · "))
 	}
 	if s.RawWarning != "" {
-		renderStatusLine(w, "note", s.RawWarning)
+		renderStatusLine(w, "备注", s.RawWarning)
 	}
+}
+
+// labelWidth 估算标签的终端显示宽度:全宽字符(CJK 等)按 2 列计,
+// 其余按 1 列 — 足够本面板的中英混排标签对齐。
+func labelWidth(s string) int {
+	w := 0
+	for _, r := range s {
+		if r > 0x7F {
+			w += 2
+		} else {
+			w++
+		}
+	}
+	return w
+}
+
+// padLabel 右补空格到目标显示宽度。替代 %-Ns(按 rune 数填充):
+// 中文标签 rune 少、占列宽,直接用 %-Ns 会把后续列挤歪。
+func padLabel(s string, width int) string {
+	if n := labelWidth(s); n < width {
+		return s + strings.Repeat(" ", width-n)
+	}
+	return s
 }
 
 // renderStatusWindow draws one quota row: label, threshold-colored fine-grain
 // bar and percentage, reset countdown, and counts when the API reports them.
-// 条形只到 80% 宽度后接百分比 —— 剩余语义:填充 = 剩余额度。
+// 条形只到 80% 宽度后接百分比 —— 剩余语义:填充 = 剩余额度,"剩"字点明。
 func renderStatusWindow(w io.Writer, label string, win *model.Window, now time.Time, cfg *config.Config) {
-	pctStr, bar, color := "  n/a", strings.Repeat("░", statusBarWidth), ansiWhite
+	pctSeg, bar := ansiWhite+"n/a"+ansiReset, strings.Repeat("░", statusBarWidth)
 	if win.RemainingPct != nil {
 		pct := *win.RemainingPct
-		pctStr = fmt.Sprintf("%3.0f%%", pct)
-		color = pctColor(pct, cfg)
+		color := pctColor(pct, cfg)
+		pctSeg = color + "剩 " + fmt.Sprintf("%.0f%%", pct) + ansiReset
 		bar = color + miniBar(pct, statusBarWidth) + ansiReset
 	}
-	line := fmt.Sprintf("  %s%s%s %s %s %s",
-		ansiWhite, fmt.Sprintf("%-11s", label), ansiReset,
-		bar, color+pctStr+ansiReset, ansiWhite+"left"+ansiReset)
+	line := fmt.Sprintf("  %s %s %s",
+		ansiWhite+padLabel(label, 11)+ansiReset, bar, pctSeg)
 	if win.ResetAt != nil {
-		line += ansiWhite + " · " + humanDuration(time.Until(*win.ResetAt)) + ansiReset
+		line += ansiWhite + " · " + humanDuration(time.Until(*win.ResetAt)) + " 后重置" + ansiReset
 	}
 	if win.TotalCount != nil && *win.TotalCount > 0 {
 		rem := int64(0)
@@ -130,7 +155,7 @@ func renderStatusWindow(w io.Writer, label string, win *model.Window, now time.T
 
 // renderStatusLine draws a label/value info row (MCP tools, expiry, models...).
 func renderStatusLine(w io.Writer, label, value string) {
-	fmt.Fprintf(w, "  %s%s%s %s\n", ansiWhite, fmt.Sprintf("%-11s", label), ansiReset, value)
+	fmt.Fprintf(w, "  %s %s\n", padLabel(label, 11), value)
 }
 
 // pctColor maps remaining percentage to threshold color (shared by status
@@ -148,7 +173,7 @@ func pctColor(pct float64, cfg *config.Config) string {
 
 func formatCounts(win *model.Window) string {
 	if win.RemainingCount != nil && win.TotalCount != nil {
-		return fmt.Sprintf("%s / %s remaining", humanInt(*win.RemainingCount), humanInt(*win.TotalCount))
+		return fmt.Sprintf("剩余 %s / %s", humanInt(*win.RemainingCount), humanInt(*win.TotalCount))
 	}
 	return "n/a"
 }
@@ -168,7 +193,7 @@ func humanInt(v int64) string {
 
 func humanDuration(d time.Duration) string {
 	if d < 0 {
-		return "soon"
+		return "即将"
 	}
 	switch {
 	case d >= 24*time.Hour:

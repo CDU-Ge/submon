@@ -12,7 +12,7 @@ var rootCmd = &cobra.Command{
 	Use:   "submon",
 	Short: "Zhipu / MiniMax / OpenCode 订阅配额监控",
 	Long: "submon 监控订阅配额(智谱 bigmodel.cn / z.ai、MiniMax、OpenCode),\n" +
-		"共享缓存保证 statusline 高频调用不打爆 API。",
+		"共享缓存避免状态栏高频调用冲击 API 限额。",
 	Version:       "dev",
 	SilenceUsage:  true,
 	SilenceErrors: true,

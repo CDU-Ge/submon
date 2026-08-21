@@ -20,7 +20,7 @@ var installClaudeCmd = &cobra.Command{
 		"  submon install claude          写入 ~/.claude/settings.json\n" +
 		"  submon install claude --print  只预览将写入的 JSON\n\n" +
 		"已有配置合并保留(不覆盖其他字段);refreshInterval=30 让空闲会话\n" +
-		"的状态栏倒计时也保持新鲜 —— statusline 只读缓存,重跑零成本。",
+		"的状态栏倒计时也保持新鲜 —— statusline 只读缓存,高频调用无额外开销。",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		bin, err := os.Executable()
 		if err != nil {

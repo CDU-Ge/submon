@@ -40,9 +40,9 @@ var notifyStatusCmd = &cobra.Command{
 			fmt.Fprintln(out, "催用提醒已关闭(notify.remind_before = 0)")
 		} else {
 			fmt.Fprintf(out, "规则: 窗口将在 %s 内重置时,按使用速率预测重置时的剩余(浪费):\n", humanDuration(remind))
-			fmt.Fprintf(out, "      预计浪费 ≥ %.0f%% → 普通提醒;≥ %.0f%% → 🔴紧急(高优先级);完全未使用 → 普通提醒\n",
+			fmt.Fprintf(out, "      预计浪费 ≥ %.0f%% → 普通提醒;≥ %.0f%% → 紧急(高优先级推送);完全未使用 → 普通提醒\n",
 				cfg.Notify.WasteNotifyPct, cfg.Notify.WasteUrgentPct)
-			fmt.Fprintln(out, "      (预测会用完/浪费很少 = 不打扰;状态变化才推送)")
+			fmt.Fprintln(out, "      (预计可自然用完或浪费较少时不推送;仅状态变化时推送一次)")
 			fmt.Fprintln(out)
 		}
 
@@ -74,11 +74,11 @@ var notifyStatusCmd = &cobra.Command{
 						if wp := w.PredictedWastePct(now); wp != nil {
 							switch {
 							case *wp >= cfg.Notify.WasteUrgentPct:
-								mark, note = "🔴", fmt.Sprintf(" ← 预计浪费 %.0f%%,下次 watch 将紧急推送", *wp)
+								mark, note = "!!", fmt.Sprintf(" ← 预计浪费 %.0f%%,下次 watch 将高优先级推送", *wp)
 							case *wp >= cfg.Notify.WasteNotifyPct:
 								mark, note = "⚠", fmt.Sprintf(" ← 预计浪费 %.0f%%,下次 watch 将提醒", *wp)
 							default:
-								mark, note = "·", fmt.Sprintf(" (预计浪费 %.0f%%,用得差不多,不打扰)", *wp)
+								mark, note = "·", fmt.Sprintf(" (预计浪费 %.0f%%,可自然用完,不推送)", *wp)
 							}
 						} else {
 							mark, note = "·", " (窗口初期,暂无法预测)"

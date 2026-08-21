@@ -207,7 +207,7 @@ func runAuthSet(cmd *cobra.Command, name string) error {
 			return err
 		}
 		if f.Required && v == "" {
-			return fmt.Errorf("%s 不能为空 — 重新跑 `submon auth %s` 输入有效值", f.Key, name)
+			return fmt.Errorf("%s 不能为空 — 重新运行 `submon auth %s` 输入有效值", f.Key, name)
 		}
 		values[f.Key] = v
 	}
@@ -216,7 +216,7 @@ func runAuthSet(cmd *cobra.Command, name string) error {
 		if f.Secret && values[f.Key] != "" && !secret.IsEncrypted(values[f.Key]) {
 			enc, err := secret.Encrypt(values[f.Key])
 			if err != nil {
-				return fmt.Errorf("加密 %s 失败: %w\n  常见原因: 磁盘写不动 ~/.config/submon/secret.key", f.Key, err)
+				return fmt.Errorf("加密 %s 失败: %w\n  常见原因: 无法写入 ~/.config/submon/secret.key(检查权限)", f.Key, err)
 			}
 			values[f.Key] = enc
 		}
@@ -356,20 +356,20 @@ func runAuthLs(cmd *cobra.Command) error {
 // 看上去紧凑又能让用户一眼看出有几个 key。
 func authProviderState(name string, cfg *config.Config) string {
 	if name == "gotify" {
-		return stateOf("url", cfg.Notify.Gotify.URL) + stateOf("app_token", cfg.Notify.Gotify.AppToken)
+		return stateOf(name, "url", cfg.Notify.Gotify.URL) + stateOf(name, "app_token", cfg.Notify.Gotify.AppToken)
 	}
 	keys := cfg.ProviderKeys(model.Provider(name))
 	if len(keys) == 0 {
 		// fallback:直接看顶层,避免漏报已存在的旧格式配置。
 		switch name {
 		case "zhipu":
-			return stateOf("token", cfg.Zhipu.Token) + stateOf("base_url", boolToStr(cfg.Zhipu.BaseURL != ""))
+			return stateOf(name, "token", cfg.Zhipu.Token) + stateOf(name, "base_url", boolToStr(cfg.Zhipu.BaseURL != ""))
 		case "kimi":
-			return stateOf("token", cfg.Kimi.Token) + stateOf("base_url", boolToStr(cfg.Kimi.BaseURL != ""))
+			return stateOf(name, "token", cfg.Kimi.Token) + stateOf(name, "base_url", boolToStr(cfg.Kimi.BaseURL != ""))
 		case "minimax":
-			return stateOf("token", cfg.MiniMax.Token)
+			return stateOf(name, "token", cfg.MiniMax.Token)
 		case "opencode":
-			return stateOf("token", cfg.OpenCode.Token)
+			return stateOf(name, "token", cfg.OpenCode.Token)
 		}
 		return "-"
 	}
@@ -384,14 +384,14 @@ func authProviderState(name string, cfg *config.Config) string {
 	return strings.Join(parts, " ")
 }
 
-func stateOf(name, v string) string {
+func stateOf(provider, field, v string) string {
 	if v == "" {
-		return name + "=-  "
+		return field + "=-  "
 	}
 	if secret.IsEncrypted(v) {
-		return name + "=enc  "
+		return field + "=enc  "
 	}
-	return name + "=PLAINTEXT(建议重跑 submon auth " + name + ")  "
+	return field + "=PLAINTEXT(建议重新运行 submon auth " + provider + ")  "
 }
 
 func boolToStr(b bool) string {
@@ -447,7 +447,7 @@ func runAuthAddLabeled(cmd *cobra.Command, name, label string) error {
 			return err
 		}
 		if f.Required && v == "" {
-			return fmt.Errorf("%s 不能为空 — 重新跑 `submon auth %s add %s` 输入有效值", f.Key, name, label)
+			return fmt.Errorf("%s 不能为空 — 重新运行 `submon auth %s add %s` 输入有效值", f.Key, name, label)
 		}
 		values[f.Key] = v
 	}
@@ -455,7 +455,7 @@ func runAuthAddLabeled(cmd *cobra.Command, name, label string) error {
 		if f.Secret && values[f.Key] != "" && !secret.IsEncrypted(values[f.Key]) {
 			enc, err := secret.Encrypt(values[f.Key])
 			if err != nil {
-				return fmt.Errorf("加密 %s 失败: %w\n  常见原因: 磁盘写不动 ~/.config/submon/secret.key", f.Key, err)
+				return fmt.Errorf("加密 %s 失败: %w\n  常见原因: 无法写入 ~/.config/submon/secret.key(检查权限)", f.Key, err)
 			}
 			values[f.Key] = enc
 		}

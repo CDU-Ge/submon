@@ -12,9 +12,13 @@ import (
 //	4. stdout 不是 TTY(管道 / 重定向时 — 否则脚本/CI 日志被 ANSI 转义污染)
 //
 // 全部命中"开",任一命中即关。Force 优先级最低,留给 FORCE_COLOR(暂未实现)。
+//
+// 例外:allowPipeColor 为 true 时跳过第 4 条 — statusline 的唯一消费者是
+// Claude Code,它经管道捕获输出并渲染 ANSI,非 TTY 在此不代表"无人看色"。
 
 var (
-	noColorFlag bool
+	noColorFlag    bool
+	allowPipeColor bool
 )
 
 func init() {
@@ -36,7 +40,7 @@ func useColor() bool {
 		return false
 	case os.Getenv("TERM") == "dumb":
 		return false
-	case !isStdoutTTY():
+	case !allowPipeColor && !isStdoutTTY():
 		return false
 	}
 	return true

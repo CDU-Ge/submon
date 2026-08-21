@@ -29,7 +29,7 @@ var generateConfigCmd = &cobra.Command{
 	Short: "生成/更新 config.toml(不丢失现有配置)",
 	Long: "按当前配置标准合并生成 ~/.config/submon/config.toml:\n" +
 		"已有配置保留,缺失字段补默认值,~/.minimax-config.json 中的 token\n" +
-		"会迁移并加密;明文 token 也会转为加密。默认只显示差异,--write 落盘。",
+		"会迁移并加密;明文 token 也会转为加密。默认只显示差异,--write 写入。",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
 		if err != nil {
