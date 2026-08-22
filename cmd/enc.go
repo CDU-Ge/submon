@@ -19,7 +19,7 @@ var (
 
 var encCmd = &cobra.Command{
 	Use:   "enc [value]",
-	Short: "用 submon 主密钥加密(或解密)任意值",
+	Short: "用 submon 主密钥加密/解密任意值",
 	Long: "用 submon 主密钥把任意值加密为 enc:v1:... 形式,-d 解密。\n\n" +
 		"不带参数或参数为 '-' 时从 stdin 读取。",
 	Args: cobra.RangeArgs(0, 1),

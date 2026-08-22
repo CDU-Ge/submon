@@ -33,9 +33,20 @@ var checkCmd = &cobra.Command{
 		"  submon check && echo ok  # 流水线里用退出码判断",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ok := true
-		fail := func(format string, a ...any) { ok = false; fmt.Fprintf(cmd.OutOrStdout(), "✗ "+format+"\n", a...) }
-		pass := func(format string, a ...any) { fmt.Fprintf(cmd.OutOrStdout(), "✓ "+format+"\n", a...) }
-		warn := func(format string, a ...any) { fmt.Fprintf(cmd.OutOrStdout(), "⚠ "+format+"\n", a...) }
+		var passN, warnN, failN int
+		fail := func(format string, a ...any) {
+			ok = false
+			failN++
+			fmt.Fprintf(cmd.OutOrStdout(), "✗ "+format+"\n", a...)
+		}
+		pass := func(format string, a ...any) {
+			passN++
+			fmt.Fprintf(cmd.OutOrStdout(), "✓ "+format+"\n", a...)
+		}
+		warn := func(format string, a ...any) {
+			warnN++
+			fmt.Fprintf(cmd.OutOrStdout(), "⚠ "+format+"\n", a...)
+		}
 
 		out := cmd.OutOrStdout()
 
@@ -62,23 +73,41 @@ var checkCmd = &cobra.Command{
 			}
 			pass("主密钥 %s %s", keyPath, note)
 		} else {
-			warn("主密钥尚未生成(首次 token set / enc 时自动创建)")
+			warn("主密钥尚未生成(首次 submon auth / enc 时自动创建)")
 		}
 
 		// ── provider 凭据 ──
 		fmt.Fprintln(out, "── Provider 凭据 ──")
 		srcCfg, _ := config.Load() // 原始形态,用于判断明文/密文
 		for _, name := range model.AllProviders() {
-			src, err := provider.Build(name, cfg)
-			if err != nil {
-				fail("%s: %v", strings.ToUpper(string(name)), err)
+			disp := strings.ToUpper(string(name))
+			secrets := authSecretValues(string(name), srcCfg)
+			if len(secrets) == 0 {
+				// Build 对空 token 也构造成功 — 已配置与否要看 env / 配置真值,
+				// 否则全新环境会得到"凭据就绪"的假阳性。
+				if provider.HasEnvCredential(name) {
+					pass("%s: 凭据就绪(环境变量)", disp)
+				} else {
+					warn("%s: 未配置(运行 submon auth %s)", disp, name)
+				}
 				continue
 			}
-			_ = src
-			// 报告凭据来源:环境变量 or 配置(加密/明文)。
-			srcRaw, _ := provider.Build(name, srcCfg)
-			_ = srcRaw
-			pass("%s: 凭据就绪", strings.ToUpper(string(name)))
+			var problems []string
+			for _, s := range secrets {
+				switch {
+				case !secret.IsEncrypted(s):
+					problems = append(problems, "存在明文(重新运行 submon auth "+string(name)+")")
+				default:
+					if _, err := secret.Decrypt(s); err != nil {
+						problems = append(problems, "解密失败("+err.Error()+")")
+					}
+				}
+			}
+			if len(problems) == 0 {
+				pass("%s: 凭据就绪(%d 个 key,加密存储)", disp, len(secrets))
+			} else {
+				fail("%s: %s", disp, strings.Join(problems, "; "))
+			}
 		}
 		if os.Getenv("ANTHROPIC_AUTH_TOKEN") != "" {
 			fmt.Fprintln(out, "  ℹ ANTHROPIC_AUTH_TOKEN 环境变量生效中(优先于配置文件)")
@@ -118,7 +147,7 @@ var checkCmd = &cobra.Command{
 			if secret.IsEncrypted(cfg.Notify.Gotify.AppToken) {
 				pass("Gotify: url + 加密 app_token 已配置")
 			} else {
-				warn("Gotify app_token 为明文,建议: submon token set gotify.app_token")
+				warn("Gotify app_token 为明文,建议重新运行: submon auth gotify")
 			}
 			// 推送链路实测。
 			g := &notify.Gotify{URL: cfg.Notify.Gotify.URL, AppToken: cfg.Notify.Gotify.AppToken}
@@ -136,10 +165,14 @@ var checkCmd = &cobra.Command{
 		timerState(out, pass, warn)
 
 		if !ok {
-			fmt.Fprintln(out, "── 结果: 存在问题,见上方 ✗ ──")
+			fmt.Fprintf(out, "── 结果: %d 项失败 / %d 项待处理 — 见上方 ✗ ──\n", failN, warnN)
 			return errCheckFailed
 		}
-		fmt.Fprintln(out, "── 结果: 全部通过 ──")
+		if warnN > 0 {
+			fmt.Fprintf(out, "── 结果: 无阻断问题(%d 项通过,%d 项建议处理)— 见上方 ⚠ ──\n", passN, warnN)
+		} else {
+			fmt.Fprintf(out, "── 结果: 全部通过(%d 项)──\n", passN)
+		}
 		return nil
 	},
 }

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/ge/subscription-monitor/internal/cache"
 	"github.com/ge/subscription-monitor/internal/config"
@@ -16,7 +18,7 @@ import (
 
 var notifyCmd = &cobra.Command{
 	Use:   "notify",
-	Short: "通知管理(测试推送 / 查看告警状态)",
+	Short: "管理通知推送与告警状态",
 	Example: "  submon notify test     # 发一条测试推送(验 Gotify 链路)\n" +
 		"  submon notify status   # 看当前告警状态机\n" +
 		"  submon notify reset    # 重置状态机,允许下次 tick 重新评估",
@@ -55,6 +57,7 @@ var notifyTestCmd = &cobra.Command{
 // 语义(像 ls --color);清空是另一个动作,放子命令更直白。`cache` 无子
 // 命令时 = `cache ls`,back-compat 友好。
 var cacheClearForce bool
+var cacheListJSON bool
 
 var cacheCmd = &cobra.Command{
 	Use:   "cache",
@@ -78,10 +81,12 @@ var cacheCmd = &cobra.Command{
 
 func init() {
 	cacheCmd.Flags().BoolVarP(&cacheClearForce, "force", "f", false, "强制清空缓存(跳过 y/N 确认;脚本里用)")
+	cacheCmd.Flags().BoolVar(&cacheListJSON, "json", false, "机器可读输出(JSON)")
 	rootCmd.AddCommand(notifyCmd, cacheCmd)
 }
 
-// runCacheList 打印当前缓存内容(JSON 格式;机器可读)。
+// runCacheList 默认输出人读表格(provider/label、数据年龄、告警状态);
+// --json 输出原始 JSON(脚本 / jq)。
 func runCacheList(cmd *cobra.Command) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -95,9 +100,41 @@ func runCacheList(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	enc := json.NewEncoder(cmd.OutOrStdout())
-	enc.SetIndent("", "  ")
-	return enc.Encode(f)
+	out := cmd.OutOrStdout()
+	if cacheListJSON {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(f)
+	}
+
+	keys := make([]string, 0, len(f.Entries))
+	for k, e := range f.Entries {
+		if e != nil {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	if len(keys) == 0 {
+		fmt.Fprintln(out, "(缓存为空 — 运行 submon status --force 或 submon watch 生成)")
+		return nil
+	}
+	for _, k := range keys {
+		e := f.Entries[k]
+		line := fmt.Sprintf("%-16s", k)
+		switch {
+		case e.Snapshot != nil:
+			line += fmt.Sprintf("%s 前更新", humanDuration(time.Since(e.FetchedAt).Round(time.Second)))
+			if lvl := e.AlertState.Level; lvl != "" && lvl != "ok" && lvl != "ok:ok" {
+				line += " · 告警状态 " + lvl
+			}
+		case e.LastErr != "":
+			line += "无快照 · 上次错误: " + firstLine(e.LastErr)
+		default:
+			line += "空条目"
+		}
+		fmt.Fprintln(out, line)
+	}
+	return nil
 }
 
 // runCacheClear 删除缓存文件。属于"中度危险"动作 — 缓存删除后下次

@@ -120,7 +120,7 @@ func authProviderNames() []string {
 //	submon auth <provider> remove        删除 default Key
 var authCmd = &cobra.Command{
 	Use:   "auth <provider> [add <label>] | ls | remove <provider> [<label>] | check | discover",
-	Short: "统一配置 provider 凭据 (从 stdin 读,不入 shell history)",
+	Short: "统一配置 provider 凭据",
 	Long: "为任意 provider 加密存储凭据:\n" +
 		authUsage() +
 		"\n\nToken 接受 stdin 输入(TTY 时无回显,管道时明文)。\n" +
@@ -162,7 +162,7 @@ var authCmd = &cobra.Command{
 			if len(args) >= 3 {
 				label = args[2]
 			}
-			return runAuthRemoveLabeled(cmd, name, label)
+			return removeWithConfirm(cmd, name, label)
 		}
 		return runAuthSet(cmd, name)
 	},
@@ -404,6 +404,28 @@ func boolToStr(b bool) string {
 // runAuthRemove 清空指定 provider 的凭据字段,不影响其他 provider。
 func runAuthRemove(cmd *cobra.Command, name string) error {
 	return runAuthRemoveLabeled(cmd, name, "default")
+}
+
+// removeWithConfirm 删除前的确认层。凭据删除后无法找回(token 需重新
+// 获取),是本工具最不可逆的操作:TTY 走 y/N 确认,非 TTY 要求 -f 显式
+// 放行 — 与 `cache clear` 同一危险等级。内部测试直接调 runAuthRemove /
+// runAuthRemoveLabeled,不经过此层。
+func removeWithConfirm(cmd *cobra.Command, name, label string) error {
+	if !authRemoveForce {
+		if !term.IsTerminal(int(os.Stdin.Fd())) {
+			return fmt.Errorf("非交互式环境拒绝执行删除(避免脚本误删):\n  强制删除: submon auth %s remove %s -f", name, label)
+		}
+		fmt.Fprintf(cmd.ErrOrStderr(), "将删除 %s/%s 已存凭据(删除后需重新获取并配置)。确认? [y/N]: ", name, label)
+		line, err := readLineFromFD(int(os.Stdin.Fd()))
+		if err != nil {
+			return err
+		}
+		if !strings.EqualFold(strings.TrimSpace(line), "y") {
+			fmt.Fprintln(cmd.OutOrStdout(), "已取消")
+			return nil
+		}
+	}
+	return runAuthRemoveLabeled(cmd, name, label)
 }
 
 // runAuthRemoveLabeled 删除指定 provider 下某 label 的 Key;label = "default"
@@ -651,8 +673,10 @@ func nonEmpty(s ...string) []string {
 }
 
 var authStdin bool
+var authRemoveForce bool
 
 func init() {
 	authCmd.Flags().BoolVar(&authStdin, "stdin", false, "强制从 stdin 读取所有字段(脚本友好)")
+	authCmd.Flags().BoolVarP(&authRemoveForce, "force", "f", false, "跳过删除确认(脚本友好)")
 	rootCmd.AddCommand(authCmd)
 }

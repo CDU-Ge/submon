@@ -26,7 +26,7 @@ var generateCmd = &cobra.Command{
 
 var generateConfigCmd = &cobra.Command{
 	Use:   "config",
-	Short: "生成/更新 config.toml(不丢失现有配置)",
+	Short: "生成/更新 config.toml,保留现有配置",
 	Long: "按当前配置标准合并生成 ~/.config/submon/config.toml:\n" +
 		"已有配置保留,缺失字段补默认值,~/.minimax-config.json 中的 token\n" +
 		"会迁移并加密;明文 token 也会转为加密。默认只显示差异,--write 写入。",

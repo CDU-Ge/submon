@@ -15,7 +15,7 @@ import (
 // statusline 只读缓存,30s 重跑一次零成本)。
 var installClaudeCmd = &cobra.Command{
 	Use:   "claude",
-	Short: "自动配置 Claude Code 状态栏(合并写入 settings.json)",
+	Short: "把 Claude Code 状态栏指向 submon",
 	Long: "把 Claude Code 的 statusLine 指向 submon:\n\n" +
 		"  submon install claude          写入 ~/.claude/settings.json\n" +
 		"  submon install claude --print  只预览将写入的 JSON\n\n" +

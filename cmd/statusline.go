@@ -132,7 +132,7 @@ var statuslineShowProvider bool
 
 var statuslineCmd = &cobra.Command{
 	Use:   "statusline",
-	Short: "Claude Code 状态栏(目录/git/模型/上下文 + 配额)",
+	Short: "渲染 Claude Code 状态栏",
 	Long: "输出单行状态栏:左稳定(目录/git 分支/模型)→ 中关心(token 使用)\n" +
 		"→ 右变动(effort/fast/订阅配额)。只读缓存,不联网。\n" +
 		"provider 选择顺序: --provider > $ANTHROPIC_BASE_URL 自动识别(内建规则 + [[provider_detection]] 用户规则)。\n" +
@@ -965,7 +965,7 @@ func stripANSI(s string) string {
 }
 
 func init() {
-	statuslineCmd.Flags().StringVar(&statuslineProvider, "provider", "", "要展示的 provider(zhipu|minimax|opencode|kimi)")
+	statuslineCmd.Flags().StringVar(&statuslineProvider, "provider", "", "要展示的 provider: "+providerListHint())
 	statuslineCmd.Flags().BoolVar(&statuslineShowProvider, "show-provider", false, "在配额段前显示 provider badge(默认关,辅助信息用纯白)")
 	// 环境变量等价于开关 — 临时调试比 --show-provider 方便。
 	if v := os.Getenv("SUBMON_SHOW_PROVIDER"); v != "" && v != "0" && v != "false" {

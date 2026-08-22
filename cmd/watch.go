@@ -26,7 +26,7 @@ import (
 // notifications on level *transitions* only, then exit.
 var watchCmd = &cobra.Command{
 	Use:   "watch",
-	Short: "单次刷新 + 催用提醒(供 systemd timer 调用)",
+	Short: "刷新配额缓存并评估催用提醒",
 	Long: "刷新全部 provider、更新共享缓存;窗口即将重置且剩余额度较多时\n" +
 		"推送催用提醒。设计为每次 timer 触发运行一次。",
 	Example: "  submon watch                  # 正常模式(供 systemd timer)\n" +

@@ -30,7 +30,7 @@ const (
 
 var installCmd = &cobra.Command{
 	Use:   "install",
-	Short: "安装 submon (systemd timer + Claude Code 状态栏自动注册)",
+	Short: "安装 systemd 定时刷新与 Claude Code 状态栏",
 	Long: "一站式安装:生成并启用 `submon watch` 的 systemd 用户定时器,\n" +
 		"**同时**自动检测 ~/.claude/settings.json 并把状态栏接上。\n\n" +
 		"  submon install              安装 timer + 自动注册 CC 状态栏\n" +

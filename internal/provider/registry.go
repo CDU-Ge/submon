@@ -32,6 +32,23 @@ func Build(name model.Provider, cfg *config.Config) (Source, error) {
 	return src, err
 }
 
+// HasEnvCredential 报告 provider 的默认 Key 凭据是否由环境变量提供。
+// env 名称与 BuildOne 的解析顺序保持一致 — check 体检用它区分
+// "未配置"与"env 兜底",避免空 token 也被 Build 成功造成的假阳性。
+func HasEnvCredential(name model.Provider) bool {
+	switch name {
+	case model.ProviderZhipu:
+		return os.Getenv("ANTHROPIC_AUTH_TOKEN") != ""
+	case model.ProviderMinimax:
+		return os.Getenv("MINIMAX_TOKEN") != ""
+	case model.ProviderOpenCode:
+		return os.Getenv("OPENCODE_API_KEY") != ""
+	case model.ProviderKimi:
+		return os.Getenv("KIMI_CODING_API_KEY") != "" || os.Getenv("KIMI_API_KEY") != ""
+	}
+	return false
+}
+
 // BuildOne 给定 provider 与 label 构造一个 Source。Label 非空时只在该
 // label 下找 Token(查顶层默认 Key 或 [[keys]] 数组里对应 label);空时
 // 取 env > 顶层 Token(单 key 老语义,不看 [[keys]] 数组 — 避免误把

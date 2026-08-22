@@ -20,7 +20,7 @@ import (
 //	fish: 生成到 vendor.completions.d 即被 fish 自动加载,不改 rc
 var completionInstallCmd = &cobra.Command{
 	Use:   "completion-install",
-	Short: "自动安装 shell 补全(写入 rc,带备份)",
+	Short: "安装 shell 补全并写入 rc 文件",
 	Long: "检测当前 shell($SHELL),生成补全脚本并自动写入 rc 文件:\n\n" +
 		"  zsh:  追加加载块到 ~/.zshrc(需已加载 compinit;没有则一并补上)\n" +
 		"  bash: 追加加载块到 ~/.bashrc\n" +
@@ -260,7 +260,7 @@ func uninstallCompletion(cmd *cobra.Command) error {
 
 var completionUninstallCmd = &cobra.Command{
 	Use:   "completion-uninstall",
-	Short: "撤销补全安装(还原 rc,带备份)",
+	Short: "撤销 shell 补全安装并还原 rc",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return uninstallCompletion(cmd)
 	},
@@ -268,7 +268,7 @@ var completionUninstallCmd = &cobra.Command{
 
 func init() {
 	completionInstallCmd.Flags().StringVar(&compShell, "shell", "", "指定 shell(bash|zsh|fish),默认检测 $SHELL")
-	completionInstallCmd.Flags().BoolVar(&compUninstll, "uninstall", false, "撤销安装(还原 rc,带备份)")
+	completionInstallCmd.Flags().BoolVar(&compUninstll, "uninstall", false, "撤销安装并还原 rc")
 	rootCmd.AddCommand(completionInstallCmd)
 	rootCmd.AddCommand(completionUninstallCmd)
 }

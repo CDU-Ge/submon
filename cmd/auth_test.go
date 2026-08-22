@@ -436,6 +436,39 @@ func TestAuthRemoveLabeledKey(t *testing.T) {
 	}
 }
 
+// TestAuthRemoveRequiresConfirmation 删除凭据是本工具最不可逆的操作:
+// 非 TTY 无 -f 拒绝执行(带 -f 提示);-f 放行后才真正删除。
+func TestAuthRemoveRequiresConfirmation(t *testing.T) {
+	withTempConfig(t)
+	withStdin(t, "tk-default\n")
+	cmd, _, _ := newTestCmd()
+	if err := runAuthSet(cmd, "zhipu"); err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { authRemoveForce = false }()
+	authRemoveForce = false
+	cmd, _, _ = newTestCmd()
+	err := removeWithConfirm(cmd, "zhipu", "default")
+	if err == nil || !strings.Contains(err.Error(), "-f") {
+		t.Fatalf("非 TTY 无 -f 应拒绝并提示 -f, got %v", err)
+	}
+	cfg, _ := config.Load()
+	if cfg.Zhipu.Token == "" {
+		t.Fatal("被拒绝的删除不应动到凭据")
+	}
+
+	authRemoveForce = true
+	cmd, _, _ = newTestCmd()
+	if err := removeWithConfirm(cmd, "zhipu", "default"); err != nil {
+		t.Fatalf("remove with -f: %v", err)
+	}
+	cfg, _ = config.Load()
+	if cfg.Zhipu.Token != "" {
+		t.Errorf("-f 后 token 未删除: %q", cfg.Zhipu.Token)
+	}
+}
+
 // TestAuthLsReportsMultiKey `auth ls` 多 key 模式下展示 default + 每条 label。
 func TestAuthLsReportsMultiKey(t *testing.T) {
 	withTempConfig(t)

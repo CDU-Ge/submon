@@ -51,6 +51,16 @@ var statusCmd = &cobra.Command{
 			return err
 		}
 
+		// 空状态:一个 provider 都没配时给出上手路径,而不是输出空白。
+		if len(names) == 0 {
+			out := cmd.OutOrStdout()
+			fmt.Fprintln(out, "尚未配置任何 provider。从这里开始:")
+			fmt.Fprintf(out, "  submon auth <provider>   配置凭据(可选: %s)\n", providerListHint())
+			fmt.Fprintln(out, "  submon install           安装定时刷新与 Claude Code 状态栏")
+			fmt.Fprintln(out, "详情: submon --help")
+			return nil
+		}
+
 		path, err := cfg.CachePath()
 		if err != nil {
 			return err
@@ -151,16 +161,16 @@ var statusCmd = &cobra.Command{
 			if i > 0 {
 				fmt.Fprintln(cmd.OutOrStdout())
 			}
+			disp := ansiWhite + rowDispName(r.provider, r.label) + ansiReset
 			if r.snap != nil {
 				renderStatus(cmd.OutOrStdout(), r.snap, time.Now(), cfg)
 				if r.err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "警告 %s/%s: %v\n", r.provider, r.label, r.err)
+					fmt.Fprintf(cmd.ErrOrStderr(), "警告 %s: %v\n", disp, r.err)
 				}
 				continue
 			}
-			failed = append(failed, fmt.Sprintf("%s/%s: %v", r.provider, r.label, r.err))
-			fmt.Fprintf(cmd.OutOrStdout(), "%s %s %s 不可用: %v\n",
-				providerBadge(r.provider), r.label, ansiDim, r.err)
+			failed = append(failed, fmt.Sprintf("%s: %v", rowDispName(r.provider, r.label), r.err))
+			fmt.Fprintf(cmd.OutOrStdout(), "%s 不可用: %v\n", disp, r.err)
 		}
 		if len(failed) > 0 {
 			fmt.Fprintln(cmd.ErrOrStderr(), "\n建议:")
@@ -181,7 +191,7 @@ func targetProviders(args []string, cfg *config.Config) ([]model.Provider, error
 	if len(args) == 1 {
 		name := model.Provider(args[0])
 		if !model.ValidProvider(name) {
-			return nil, fmt.Errorf("不认识 provider %q\n  可选: zhipu | minimax | opencode | kimi\n  看用法: submon status --help", args[0])
+			return nil, fmt.Errorf("不认识 provider %q\n  可选: %s\n  看用法: submon status --help", args[0], providerListHint())
 		}
 		return []model.Provider{name}, nil
 	}
@@ -192,6 +202,15 @@ func targetProviders(args []string, cfg *config.Config) ([]model.Provider, error
 		}
 	}
 	return out, nil
+}
+
+// rowDispName 行显示名:单 key(default/空)只显示 provider 名,多 key
+// 显示 provider/label — 与面板标题口径一致(不向单 key 用户暴露 default)。
+func rowDispName(p model.Provider, label string) string {
+	if label == "" || label == "default" {
+		return string(p)
+	}
+	return string(p) + "/" + label
 }
 
 // providerConfigured 判断 provider 是否至少有一个已配置 Key。
