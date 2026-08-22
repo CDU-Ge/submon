@@ -61,7 +61,7 @@ Gotify 走同一安全等级:URL 明文、`app_token` 加密,与 provider 同流
 
 - 状态栏/终端输出:**禁用 dim 灰色**(可读性),辅助信息用 `ansiWhite`(默认前景色 `\033[0;39m`),彩色只留给语义信息(百分比阈值变色绿/黄/红)。
 - statusline 排版有 a/b/c 三套(`statusline.layout` 配置,`SUBMON_LAYOUT` 环境变量可临时切换预览),默认 a;改格式时三套都要对齐。
-- 新增 config 字段要同时改:`Config` 结构体 toml tag、`Default()`、`Load()` 的兜底逻辑,以及 `submon generate config` 的合并迁移逻辑(保持"不丢现有配置"承诺)。
+- 新增 config 字段要同时改:`Config` 结构体 toml tag、`Default()`、`Load()` 的兜底逻辑,以及 `submon config` 的合并迁移逻辑(保持"不丢现有配置"承诺)。
 - 通知推送文案带预测依据(数学过程写进正文),标题首词标紧急度(【紧急】/【提醒】)。
 - 测试不打真实 API;provider 测试用 `httptest.NewServer` mock 原始响应(payload 形状来自真实抓包,见各 provider 测试里的注释)。
 

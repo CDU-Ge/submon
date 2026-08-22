@@ -14,87 +14,102 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// generateCmd writes a config.toml that reflects the current schema while
-// preserving existing values: decode the user's file into the struct (which
-// fills defaults for missing fields), then re-encode. A field the user set
-// stays; a field the schema added since their file was written appears with
-// its default or a migrated value.
-var generateCmd = &cobra.Command{
-	Use:   "generate",
-	Short: "生成各类文件",
-}
-
-var generateConfigCmd = &cobra.Command{
+// configCmd 生成/更新 ~/.config/submon/config.toml:把用户现有文件解码进
+// 结构体(缺失字段填默认值)再重新编码。用户设过的字段保留;schema 新增的
+// 字段以默认值或迁移值出现。
+var configCmd = &cobra.Command{
 	Use:   "config",
-	Short: "生成/更新 config.toml,保留现有配置",
+	Short: "生成/更新 config.toml",
 	Long: "按当前配置标准合并生成 ~/.config/submon/config.toml:\n" +
 		"已有配置保留,缺失字段补默认值,~/.minimax-config.json 中的 token\n" +
 		"会迁移并加密;明文 token 也会转为加密。默认只显示差异,--write 写入。",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.Load()
+	Example: "  submon config            # 预览与现有文件的差异,不写入\n" +
+		"  submon config --write    # 确认无误后实际写入\n" +
+		"  submon auth zhipu        # 凭据配置走 auth(自动加密)",
+	RunE: runConfigMigrate,
+}
+
+// runConfigMigrate 是 config 生成的唯一实现;顶层 `submon config` 与
+// deprecated 兼容路径共用。
+func runConfigMigrate(cmd *cobra.Command, args []string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	dir, err := config.Dir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(dir, "config.toml")
+
+	migrated := ""
+	migrate := func(slot, value string) string {
+		if value == "" || secret.IsEncrypted(value) {
+			return value
+		}
+		enc, err := secret.Encrypt(value)
 		if err != nil {
-			return err
+			return value // keep plaintext rather than failing the merge
 		}
-		dir, err := config.Dir()
-		if err != nil {
-			return err
+		migrated = slot
+		return enc
+	}
+	if cfg.MiniMax.Token == "" {
+		if tok := provider.ReadLegacyMinimaxToken(); tok != "" {
+			cfg.MiniMax.Token = migrate("minimax.token (from ~/.minimax-config.json)", tok)
 		}
-		path := filepath.Join(dir, "config.toml")
+	}
+	// Encrypt any plaintext tokens already in config.toml.
+	cfg.Zhipu.Token = migrate("zhipu.token", cfg.Zhipu.Token)
+	cfg.MiniMax.Token = migrate("minimax.token", cfg.MiniMax.Token)
+	cfg.OpenCode.Token = migrate("opencode.token", cfg.OpenCode.Token)
+	cfg.Kimi.Token = migrate("kimi.token", cfg.Kimi.Token)
+	cfg.Notify.Gotify.AppToken = migrate("gotify.app_token", cfg.Notify.Gotify.AppToken)
 
-		migrated := ""
-		migrate := func(slot, value string) string {
-			if value == "" || secret.IsEncrypted(value) {
-				return value
-			}
-			enc, err := secret.Encrypt(value)
-			if err != nil {
-				return value // keep plaintext rather than failing the merge
-			}
-			migrated = slot
-			return enc
-		}
-		if cfg.MiniMax.Token == "" {
-			if tok := provider.ReadLegacyMinimaxToken(); tok != "" {
-				cfg.MiniMax.Token = migrate("minimax.token (from ~/.minimax-config.json)", tok)
-			}
-		}
-		// Encrypt any plaintext tokens already in config.toml.
-		cfg.Zhipu.Token = migrate("zhipu.token", cfg.Zhipu.Token)
-		cfg.MiniMax.Token = migrate("minimax.token", cfg.MiniMax.Token)
-		cfg.OpenCode.Token = migrate("opencode.token", cfg.OpenCode.Token)
-		cfg.Kimi.Token = migrate("kimi.token", cfg.Kimi.Token)
-		cfg.Notify.Gotify.AppToken = migrate("gotify.app_token", cfg.Notify.Gotify.AppToken)
+	var buf bytes.Buffer
+	enc := toml.NewEncoder(&buf)
+	enc.Indent = ""
+	if err := enc.Encode(cfg); err != nil {
+		return fmt.Errorf("encode config: %w", err)
+	}
+	generated := buf.String()
 
-		var buf bytes.Buffer
-		enc := toml.NewEncoder(&buf)
-		enc.Indent = ""
-		if err := enc.Encode(cfg); err != nil {
-			return fmt.Errorf("encode config: %w", err)
+	if !generateWrite {
+		prev, existed := "", false
+		if raw, err := os.ReadFile(path); err == nil {
+			prev, existed = string(raw), true
 		}
-		generated := buf.String()
-
-		if !generateWrite {
-			prev, existed := "", false
-			if raw, err := os.ReadFile(path); err == nil {
-				prev, existed = string(raw), true
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), renderConfigDiff(prev, existed, generated, path, migrated))
-			fmt.Fprintln(cmd.OutOrStdout(), "预览模式:加 --write 参数才会实际写入")
-			return nil
-		}
-
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return err
-		}
-		if err := os.WriteFile(path, []byte(generated), 0o600); err != nil {
-			return err
-		}
-		fmt.Fprintln(cmd.OutOrStdout(), "已写入", path)
-		if migrated != "" {
-			fmt.Fprintf(cmd.OutOrStdout(), "已迁移并加密: %s(原文件可以删除了)\n", migrated)
-		}
+		fmt.Fprintln(cmd.OutOrStdout(), renderConfigDiff(prev, existed, generated, path, migrated))
+		fmt.Fprintln(cmd.OutOrStdout(), "预览模式:加 --write 参数才会实际写入")
 		return nil
-	},
+	}
+
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(generated), 0o600); err != nil {
+		return err
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "已写入", path)
+	if migrated != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "已迁移并加密: %s(原文件可以删除了)\n", migrated)
+	}
+	return nil
+}
+
+// generateCmd 是 deprecated 兼容入口:原名"生成各类文件",实际只有 config
+// 一个子命令 — 已拍平为顶层 `submon config`,此路径保留给旧脚本/文档。
+var generateCmd = &cobra.Command{
+	Use:    "generate",
+	Short:  "[已弃用] 同 submon config",
+	Hidden: true,
+}
+
+var generateConfigCmd = &cobra.Command{
+	Use:        "config",
+	Short:      "[已弃用] 同 submon config",
+	Deprecated: "改用 submon config(行为一致)",
+	RunE:       runConfigMigrate,
 }
 
 var generateWrite bool
@@ -163,7 +178,8 @@ func maskSecrets(lines []string) []string {
 }
 
 func init() {
+	configCmd.Flags().BoolVar(&generateWrite, "write", false, "写入合并后的配置(默认只预览差异)")
 	generateConfigCmd.Flags().BoolVar(&generateWrite, "write", false, "写入合并后的配置(默认只预览差异)")
 	generateCmd.AddCommand(generateConfigCmd)
-	rootCmd.AddCommand(generateCmd)
+	rootCmd.AddCommand(configCmd, generateCmd)
 }

@@ -12,7 +12,7 @@ import (
 func TestCommandsHaveExamples(t *testing.T) {
 	wantExample := []*cobra.Command{
 		statusCmd, watchCmd, authCmd, installCmd, checkCmd,
-		versionCmd, notifyCmd, cacheCmd,
+		versionCmd, notifyCmd, cacheCmd, configCmd,
 	}
 	for _, c := range wantExample {
 		if c == nil {

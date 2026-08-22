@@ -106,7 +106,7 @@ Credentials are never baked into unit files — use `submon token set` or
 `~/.config/environment.d/`. On machines without a systemd user session the
 units are still written, with the manual enable command printed.
 
-### `submon generate config`
+### `submon config`
 
 Merge-generate `~/.config/submon/config.toml` against the current schema:
 existing values are preserved, new fields are filled with defaults, and a
@@ -115,8 +115,8 @@ file can then be deleted). Dry-run with a masked diff by default;
 `--write` applies.
 
 ```sh
-submon generate config          # preview diff (tokens masked)
-submon generate config --write  # apply
+submon config          # preview diff (tokens masked)
+submon config --write  # apply
 ```
 
 ### `submon notify --test`
@@ -146,7 +146,7 @@ submon token unset zhipu.token
 
 Slots: `zhipu.token`, `minimax.token`, `opencode.token`, `gotify.app_token`.
 
-`submon generate config` migrates plaintext tokens (and the legacy
+`submon config` migrates plaintext tokens (and the legacy
 `~/.minimax-config.json`) to encrypted form in one pass.
 
 ### `submon enc`
