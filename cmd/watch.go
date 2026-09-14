@@ -52,7 +52,8 @@ var watchCmd = &cobra.Command{
 			return err
 		}
 
-		g := &notify.Gotify{URL: cfg.Notify.Gotify.URL, AppToken: cfg.Notify.Gotify.AppToken}
+		gURL, gToken := cfg.GotifyCredential()
+		g := &notify.Gotify{URL: gURL, AppToken: gToken}
 		// SIGINT / SIGTERM:第一次按 = 取消 in-flight HTTP,清干净退出;
 		// 第二次按 = 立即放弃,不写缓存。两段 ctx:用户取消 + 60s 总预算,
 		// 任何一个先到都让所有 provider Fetch 收到 Done 信号。

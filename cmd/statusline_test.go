@@ -366,9 +366,9 @@ func TestProviderBadgeDefaultOff(t *testing.T) {
 // 用 cache.File 直接塞两条 entries 模拟 "watch 跑过后" 的状态,避免 mock HTTP。
 func TestQuotaSegmentForProviderMultiKey(t *testing.T) {
 	cfg := config.Default()
-	cfg.Kimi.Keys = []config.ProviderKey{
-		{Label: "alice", Token: "tk-a"},
-		{Label: "bob", Token: "tk-b"},
+	cfg.Accounts = []config.Account{
+		{Provider: "kimi", Label: "alice", Token: "tk-a"},
+		{Provider: "kimi", Label: "bob", Token: "tk-b"},
 	}
 
 	// 直接写 cache。
@@ -425,7 +425,7 @@ func TestQuotaSegmentForProviderMultiKey(t *testing.T) {
 // 与历史一致(单 key 老用户不应看到 "default" 字符串)。
 func TestQuotaSegmentForProviderSingleKeyNoLabel(t *testing.T) {
 	cfg := config.Default()
-	cfg.Kimi.Token = "tk-only"
+	cfg.Accounts = []config.Account{{Provider: "kimi", Label: "default", Token: "tk-only"}}
 
 	dir := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", dir)

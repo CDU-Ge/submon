@@ -42,7 +42,7 @@ var installCmd = &cobra.Command{
 		"子命令保留向后兼容:\n" +
 		"  submon install claude       等同于 --claude-only(写 ~/.claude/settings.json)\n\n" +
 		"环境变量凭据(ANTHROPIC_AUTH_TOKEN 等)不会写入 unit 文件 —\n" +
-		"请放在 ~/.config/submon/config.toml(submon auth <provider>)\n" +
+		"请放在 ~/.config/submon/config.toml(submon login)\n" +
 		"或 ~/.config/environment.d/ 中。",
 	Example: "  submon install                 # 装 timer + 自动接 CC 状态栏\n" +
 		"  submon install --no-claude     # 只装 systemd,不碰 Claude Code\n" +

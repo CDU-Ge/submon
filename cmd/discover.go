@@ -18,7 +18,7 @@ import (
 // 列出来逐条问 Y/n 是否加密存到 config.toml。
 //
 // 设计:不会主动打印明文 token — 每个候选项只展示来源 + 掩码(prefix +
-// 尾 4 字符)。导入 = 与 submon auth <provider> 同一加密路径。
+// 尾 4 字符)。导入 = 与 submon login 同一加密路径。
 //
 // `--apply` 非交互式导入全部(适合 CI / 脚本)。`--dry-run` 只列不写。
 type discoverSource struct {
@@ -42,22 +42,22 @@ var discoverCmd = &cobra.Command{
 		"  - 旧版 ~/.minimax-config.json\n" +
 		"  - ~/.claude/settings.json 的 env 段\n\n" +
 		"每个候选项只展示来源 + 掩码(从不明文打印),逐条问 Y/n 是否加密导入。\n\n" +
-		"  submon auth discover              交互式\n" +
-		"  submon auth discover --apply      全量导入(脚本友好)\n" +
-		"  submon auth discover --dry-run    只列不写",
+		"  submon login discover              交互式\n" +
+		"  submon login discover --apply      全量导入(脚本友好)\n" +
+		"  submon login discover --dry-run    只列不写",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runAuthDiscover(cmd)
+		return runLoginDiscover(cmd)
 	},
 }
 
 func init() {
 	discoverCmd.Flags().BoolVar(&discoverApply, "apply", false, "非交互式:全量导入所有候选项")
 	discoverCmd.Flags().BoolVar(&discoverDryRun, "dry-run", false, "只列出候选项,不写入")
-	authCmd.AddCommand(discoverCmd)
+	loginCmd.AddCommand(discoverCmd)
 }
 
-// runAuthDiscover 主流程:scan → 展示 → 询问 → 加密 → save。
-func runAuthDiscover(cmd *cobra.Command) error {
+// runLoginDiscover 主流程:scan → 展示 → 询问 → 加密 → save。
+func runLoginDiscover(cmd *cobra.Command) error {
 	sources := scanDiscoverSources()
 
 	if len(sources) == 0 {
@@ -147,20 +147,20 @@ func scanDiscoverSources() []discoverSource {
 		}
 		switch k {
 		case "ANTHROPIC_AUTH_TOKEN":
-			out = append(out, envSource("zhipu", "token", v, setZhipuToken))
+			out = append(out, envSource("zhipu", "token", v, accountSetter("zhipu", "token")))
 		case "KIMI_CODING_API_KEY":
-			out = append(out, envSource("kimi", "token", v, setKimiToken))
+			out = append(out, envSource("kimi", "token", v, accountSetter("kimi", "token")))
 		case "KIMI_API_KEY":
 			// 仅在 KIMI_CODING_API_KEY 没设时纳入 — 避免两个相同账号被列两次。
 			if !hasEnv(env, "KIMI_CODING_API_KEY") {
-				out = append(out, envSource("kimi", "token", v, setKimiToken))
+				out = append(out, envSource("kimi", "token", v, accountSetter("kimi", "token")))
 			}
 		case "MINIMAX_TOKEN":
-			out = append(out, envSource("minimax", "token", v, setMinimaxToken))
+			out = append(out, envSource("minimax", "token", v, accountSetter("minimax", "token")))
 		case "OPENCODE_API_KEY":
-			out = append(out, envSource("opencode", "token", v, setOpencodeToken))
+			out = append(out, envSource("opencode", "token", v, accountSetter("opencode", "token")))
 		case "ANTHROPIC_BASE_URL":
-			out = append(out, envSource("zhipu", "base_url", v, setZhipuBaseURL))
+			out = append(out, envSource("zhipu", "base_url", v, accountSetter("zhipu", "base_url")))
 		}
 	}
 
@@ -168,7 +168,7 @@ func scanDiscoverSources() []discoverSource {
 	if tok := provider.ReadLegacyMinimaxToken(); tok != "" {
 		// 与 MINIMAX_TOKEN 互斥:env 已有就不重复列。
 		if !hasEnv(env, "MINIMAX_TOKEN") {
-			out = append(out, envSource("minimax", "token (from ~/.minimax-config.json)", tok, setMinimaxToken))
+			out = append(out, envSource("minimax", "token (from ~/.minimax-config.json)", tok, accountSetter("minimax", "token")))
 		}
 	}
 
@@ -205,56 +205,31 @@ func (s discoverSource) disclose() string {
 
 // --- Setter closures: encrypt + write back ---
 
-func setZhipuToken(cfg *config.Config, v string) {
-	if secret.IsEncrypted(v) {
-		cfg.Zhipu.Token = v
-		return
+// accountSetter 构造一个导入闭包:把单个字段写入 (provider, default)
+// 账号;Secret 字段先加密。空字段不触碰现有值(UpsertAccount 的合并语义)。
+func accountSetter(provider, field string) func(*config.Config, string) {
+	return func(cfg *config.Config, v string) {
+		a := config.Account{Provider: provider, Label: config.DefaultLabel}
+		if field == "token" {
+			if v == "" {
+				return
+			}
+			if !secret.IsEncrypted(v) {
+				enc, err := secret.Encrypt(v)
+				if err != nil {
+					return
+				}
+				v = enc
+			}
+			a.Token = v
+		} else {
+			if v == "" {
+				return
+			}
+			a.BaseURL = v
+		}
+		cfg.UpsertAccount(a)
 	}
-	enc, err := secret.Encrypt(v)
-	if err != nil {
-		return
-	}
-	cfg.Zhipu.Token = enc
-}
-
-func setKimiToken(cfg *config.Config, v string) {
-	if secret.IsEncrypted(v) {
-		cfg.Kimi.Token = v
-		return
-	}
-	enc, err := secret.Encrypt(v)
-	if err != nil {
-		return
-	}
-	cfg.Kimi.Token = enc
-}
-
-func setMinimaxToken(cfg *config.Config, v string) {
-	if secret.IsEncrypted(v) {
-		cfg.MiniMax.Token = v
-		return
-	}
-	enc, err := secret.Encrypt(v)
-	if err != nil {
-		return
-	}
-	cfg.MiniMax.Token = enc
-}
-
-func setOpencodeToken(cfg *config.Config, v string) {
-	if secret.IsEncrypted(v) {
-		cfg.OpenCode.Token = v
-		return
-	}
-	enc, err := secret.Encrypt(v)
-	if err != nil {
-		return
-	}
-	cfg.OpenCode.Token = enc
-}
-
-func setZhipuBaseURL(cfg *config.Config, v string) {
-	cfg.Zhipu.BaseURL = v
 }
 
 // --- mask / env helpers ---
@@ -304,9 +279,9 @@ func scanClaudeSettingsEnv() []discoverSource {
 		}
 		switch k {
 		case "ANTHROPIC_AUTH_TOKEN":
-			out = append(out, envSource("zhipu", "token (from ~/.claude/settings.json env)", v, setZhipuToken))
+			out = append(out, envSource("zhipu", "token (from ~/.claude/settings.json env)", v, accountSetter("zhipu", "token")))
 		case "ANTHROPIC_BASE_URL":
-			out = append(out, envSource("zhipu", "base_url (from ~/.claude/settings.json env)", v, setZhipuBaseURL))
+			out = append(out, envSource("zhipu", "base_url (from ~/.claude/settings.json env)", v, accountSetter("zhipu", "base_url")))
 		}
 	}
 	return out

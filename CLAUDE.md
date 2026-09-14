@@ -32,30 +32,30 @@ watch / status --force                                            └─► watc
 ```
 
 - `internal/model`:**Window/Snapshot 归一化模型**。所有 provider 解析成同一形状。关键语义:Zhipu/OpenCode 的 `percentage`/`percent` 是*已用%*,MiniMax 的 `*_remaining_percent` 是*剩余%*——归一层统一翻转为"剩余"。`Window.PredictedWastePct()` 用速率外推 5h 窗口重置时的浪费。`AllProviders()` 是 provider 清单的唯一权威来源。
-- `internal/provider`:Zhipu 按配额条目的 `(type, unit, number)` 元组识别窗口(TOKENS_LIMIT unit=3/5 → 5h,unit=6/1 → 周,TIME_LIMIT unit=5/1 → 月度 MCP);MiniMax 响应字段在顶层(无 data 包装)、时间戳是 epoch 毫秒;OpenCode zen `/zen/go/v1/usage` 的 `percent` 是已用%、`resetsAt` 是 RFC3339,rolling/weekly/monthly 三窗口。`registry.Build` 解析凭据,顺序:**环境变量 > 配置文件 > 内置默认**(zhipu 默认 base_url `https://open.bigmodel.cn/api/anthropic`)。**新增 provider 时**:provider 实现 + `registry.Build` 分支 + `DetectFromBaseURL` + config 结构体 + `AllProviders()` 注册 + token 槽位 + `generate config` 迁移,cmd 层一律遍历 `model.AllProviders()`,不要硬编码列表。
+- `internal/provider`:Zhipu 按配额条目的 `(type, unit, number)` 元组识别窗口(TOKENS_LIMIT unit=3/5 → 5h,unit=6/1 → 周,TIME_LIMIT unit=5/1 → 月度 MCP);MiniMax 响应字段在顶层(无 data 包装)、时间戳是 epoch 毫秒;OpenCode zen `/zen/go/v1/usage` 的 `percent` 是已用%、`resetsAt` 是 RFC3339,rolling/weekly/monthly 三窗口。`registry.Build` 解析凭据,顺序:**环境变量 > 默认账号 > 内置默认**(zhipu 默认 base_url `https://open.bigmodel.cn/api/anthropic`)。**新增 provider 时**:provider 实现 + `registry.BuildOne/BuildAll` 分支 + `DetectFromBaseURL` + `loginRegistry` 登记 + `AllProviders()` 注册,cmd 层一律遍历 `model.AllProviders()`,不要硬编码列表。
 - `internal/cache`:单 JSON 文件,按 `(provider, label)` 编码 key — 默认 Key 走裸 provider 名(`"zhipu"`)与历史兼容,命名 Key 走 `"zhipu/alice"`。`File.GetLabeled` / `SetLabeled` 是多 key 入口,`Get` / `Set` 仍走默认 key(单 key 老路径)。原子写(temp+rename+flock)。存 snapshot(含 `KeyLabel`)、`RefreshedAt`(statusline 自愈节流)、`AlertState`(告警状态机记忆)、`History`(转换率采样,每 Key 各自一份)。
-- **多 Key 模式**:同一 provider 支持多套凭据(`[[provider.keys]]` 数组 + 顶层 default)。`config.ProviderKeys(p)` 合并两者返回 `[]ProviderKey`(顶层 default → [[keys]] 顺序),空 Label 自动编号 `key-N`,重复 Label 后写覆盖前写。`registry.BuildAll(p, cfg)` 一次性构造所有 Key 的 Source,每个 `LabeledSource.Fetch` 把 `Label` 写入 `Snapshot.KeyLabel`。`refresh.Many` 按 Key 独立取数 + 独立写 cache;`watch` 每个 Key 各自跑告警状态机(`AlertState` 也按 Key 隔离)。status / statusline 多 Key 段并列渲染,默认 Key 与单 Key 老格式**完全一致**(不显示 "default" 字符串)。
-- **多 Key 配置入口**:`submon auth <provider> add <label>`(走 authRegistry 字段定义,与默认走同一条加密路径);`submon auth <provider> remove <label>`(label 默认 "default")。`auth ls` 显示 `default=enc alice=enc bob=enc` 形式,`auth check` 也遍历所有 Key。
+- **账号模型**:凭据统一存 `[[accounts]]`(`config.Account{Provider, Label, Token, BaseURL}`),gotify 也是账号(`BaseURL`=服务地址、`Token`=app_token)。`config.ProviderKeys(p)` 按 provider 过滤账号并规范化:空 label 的第一个账号即 `default`,其余自动编号 `key-N`,重复 label 后写覆盖前写,空 token 跳过。`registry.BuildAll(p, cfg)` 一次性构造所有账号的 Source,每个 `LabeledSource.Fetch` 把 `Label` 写入 `Snapshot.KeyLabel`。`refresh.Many` 按账号独立取数 + 独立写 cache;`watch` 每个账号各自跑告警状态机(`AlertState` 也按 label 隔离)。status / statusline 多账号段并列渲染,default 与单账号格式**完全一致**(不显示 "default" 字符串)。旧格式(`[zhipu] token` + `[[zhipu.keys]]` + `[notify.gotify] url/app_token`)由 `config.Load()` 内存迁移(见 `legacyConfig`),任何一次 Save 即落盘新 schema。
+- **账号配置入口**:`submon login`(默认添加:交互选 provider/标签/字段);`submon login ls` 列账号;`submon login remove [provider [label]]` 删除(无参数交互选,非 TTY 需 `-f`)。`login ls` 永不打印明文。
 - `internal/predict`:**weekly 必然浪费**检测——人每天最多 3 个 5h 窗口(要休息),`转换率(中位数 Δweekly/Δ5h) × 剩余窗口数` 与 weekly 剩余对比,算出"无论如何都用不完"的部分。无历史时用保守假设 5h/168h≈3%/窗口。
 - `internal/secret`:AES-256-GCM,密钥**自管理**存 `~/.config/submon/secret.key`(0600),不依赖系统 keyring。config.toml 里 token 存 `enc:v1:nonce:ct`。
 - `cmd/watch.go`:两级告警状态机(weekly 必然浪费随时评估;5h 窗口仅重置前 `remind_before` 内评估),组合状态 `weekly:short` 变化才推送,推送失败不推进状态。语义是**催用**(要到期了抓紧用),不是不足告警。
 - `cmd/statusline.go`:必须秒回、永不联网、永不 hard-fail。缓存过期时 fork 后台 `watch --quiet` 自愈(下帧生效)。provider 识别:`--provider` > `ANTHROPIC_BASE_URL` 自动识别(走各 provider 在自己文件里声明的 `xxxRules()`,`DefaultDetectionRules` 聚合;glob `*.z.ai` / path 前缀 / priority 在 `internal/provider/provider.go:Rule`)。三处都没命中 statusline 不显示配额段(没有 default_provider 兜底,避免误导)。模型名含 GLM/zhipu/minimax 时省略对应 provider badge(信息冗余)。**检测规则不进 config.toml** — 加 provider 时改文件。
-- 凭据解密入口统一是 `cmd/token.go` 的 `loadDecryptedConfig()`(config.Load + DecryptSecrets);generate/ls 等展示存储形态的场景用原始 `config.Load()`。
+- 凭据解密入口统一是 `cmd/root.go` 的 `loadDecryptedConfig()`(config.Load + DecryptSecrets);`login ls` / `check` 展示存储形态的场景用原始 `config.Load()`。
 
 ## 凭据配置(新增)
 
-**统一入口**:`submon auth <provider>` — 配 zhipu/minimax/opencode/kimi/gotify 全部走同一路径。**不要**用 `submon auth <provider> <token>` 这种命令行参数形式(token 会进 shell history)。**不要**用 `submon token set <slot> <value>`(同上,且 token 进了 `~/.bash_history` 之后即使再加密也救不回)。
+**统一入口**:`submon login` — 配 zhipu/minimax/opencode/kimi/gotify 全部走同一路径。**不要**用 `submon login <token>` 这种命令行参数形式(token 会进 shell history)。**不要**复活已删除的 `submon token` / `submon auth`。
 
-- `submon auth <provider>` — 走 `<provider>` 注册表,从 stdin 读 token(TTY 时无回显,管道时明文);落盘前 AES-256-GCM 加密
-- `submon auth ls` — 列每个 provider 存储形态(`enc` / `PLAINTEXT` / `-`),永不打印明文
-- `submon auth remove <provider>` — 清空该 provider 的凭据
-- `submon auth check` — 解密+完整性体检,适合 systemd watchdog
+- `submon login` — 走 `cmd/login.go` 的 `loginRegistry`(`loginField{Secret, Required}`),依次询问 provider / 标签 / token(TTY 时无回显,管道时逐行读);落盘前 AES-256-GCM 加密
+- `submon login ls` — 列所有账号与存储形态(`enc` / `PLAINTEXT` / `-`),永不打印明文
+- `submon login remove [provider [label]]` — 删除账号(无参数交互选择;非 TTY 需 `-f`)
+- `submon login discover` — 扫 env / CC settings 询问式导入
 
-注册表是 `cmd/auth.go` 的 `authRegistry`(`authField{Secret, Required}` + `Apply`),新 provider **必须** 在这里登记,不允许在 cmd 层写 `if name == "xxx"` 分支。`cmd/token.go` 保留用于向后兼容,但已 deprecated。
+注册表是 `cmd/login.go` 的 `loginRegistry`,新 provider **必须** 在这里登记,不允许在 cmd 层写 `if name == "xxx"` 分支。`Discover` 的 setter 统一走 `accountSetter(provider, field)`。
 
-Gotify 走同一安全等级:URL 明文、`app_token` 加密,与 provider 同流程。
+Gotify 走同一安全等级:URL 明文、`app_token` 加密,与 provider 同流程、同 `[[accounts]]` 存储。
 
-测试规范:统一在 `cmd/auth_test.go` 用 `authTestProviders` 表驱动,每个 provider 跑 set/ls/remove/check 四条用例,新增 provider 必须扩同一张表;`TestAuthRegistryCoversAllProviders` 与 `TestAuthRejectsUnknownProvider` 守住"注册表 = 唯一真源"约束。
+测试规范:统一在 `cmd/login_test.go` 用 `loginTestProviders` 表驱动,每个 provider 跑 add/ls/remove 三条用例,新增 provider 必须扩同一张表;`TestLoginRegistryCoversAllProviders` 与 `TestLoginRejectsUnknownProvider` 守住"注册表 = 唯一真源"约束。
 
 ## 约定
 

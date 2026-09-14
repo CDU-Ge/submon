@@ -227,7 +227,7 @@ func quotaWindowSegs(cfg *config.Config, now time.Time, verbose bool) []string {
 
 	keys := cfg.ProviderKeys(name)
 	if len(keys) == 0 {
-		keys = []config.ProviderKey{{Label: "default"}}
+		keys = []config.Account{{Label: "default"}}
 	}
 
 	var perKey [][]string
@@ -773,7 +773,7 @@ func quotaSegmentForProvider(cfg *config.Config, name model.Provider, now time.T
 	keys := cfg.ProviderKeys(name)
 	// env 兜底 / 单 key 老路径:keys 为空但 provider 已配 — 用 default 渲染。
 	if len(keys) == 0 {
-		keys = []config.ProviderKey{{Label: "default"}}
+		keys = []config.Account{{Label: "default"}}
 	}
 
 	var segs []string

@@ -1,31 +1,49 @@
 # submon configuration.
 # Copy to ~/.config/submon/config.toml and edit.
-# Every field is optional — zhipu also reads ANTHROPIC_BASE_URL /
-# ANTHROPIC_AUTH_TOKEN from the environment; minimax falls back to
-# ~/.minimax-config.json.
+#
+# 推荐用 `submon login` 交互式写入凭据(自动加密);本文件只手编非凭据部分。
+# Token 必须保持 enc:v1:... 密文形态,`submon config --write` 会把明文自动加密。
+# 旧格式([zhipu] token + [[zhipu.keys]])会在 Load 时内存迁移到 [[accounts]],
+# 任何一次保存都会把文件落成新 schema。
 
-[zhipu]
-# Defaults to $ANTHROPIC_BASE_URL. Only the origin matters:
-# https://open.bigmodel.cn/api/anthropic and https://api.z.ai/api/anthropic
-# are both fine.
-base_url = "https://open.bigmodel.cn/api/anthropic"
-# Defaults to $ANTHROPIC_AUTH_TOKEN.
-# token = "sk-..."
-
-[minimax]
-# Also readable from the MINIMAX_TOKEN environment variable.
-# `submon generate config` migrates this from ~/.minimax-config.json if that
-# file exists.
-# token = "eyJ..."
-
-[opencode]
-# Also readable from the OPENCODE_API_KEY environment variable.
-# token = "oc_..."
-
-[kimi]
-# Kimi Coding Plan (https://api.kimi.com/coding/v1). 推荐用 `submon auth kimi` 配置;
-# 直接编辑本文件需要手动 encrypt(参考其它 provider 行的 enc:v1:... 形态)。
-# `KIMI_CODING_API_KEY` / `KIMI_API_KEY` 环境变量也会被读取。
+# ── 账号凭据 ──
+# 每个 [[accounts]] 是一套凭据;同 provider 多个 label = 多账号(主备/轮换)。
+# label 省略或空 → 第一个未命名账号即 default,其余自动编号 key-N。
+# base_url 可选:zhipu / kimi 是 provider 基址,gotify 是服务地址(必填)。
+# 环境变量优先于 default 账号:ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL、
+# MINIMAX_TOKEN、OPENCODE_API_KEY、KIMI_CODING_API_KEY / KIMI_API_KEY。
+#
+# [[accounts]]
+# provider = "zhipu"
+# label = "default"
+# token = "enc:v1:..."
+# base_url = "https://open.bigmodel.cn/api/anthropic"
+#
+# [[accounts]]
+# provider = "zhipu"
+# label = "alice"
+# token = "enc:v1:..."
+#
+# [[accounts]]
+# provider = "minimax"
+# label = "default"
+# token = "enc:v1:..."
+#
+# [[accounts]]
+# provider = "opencode"
+# label = "default"
+# token = "enc:v1:..."
+#
+# [[accounts]]
+# provider = "kimi"
+# label = "default"
+# token = "enc:v1:..."
+#
+# [[accounts]]
+# provider = "gotify"
+# label = "default"
+# token = "enc:v1:..."                    # app_token
+# base_url = "https://gotify.example.com"
 
 [cache]
 # Seconds a snapshot stays fresh. statusline reads the cache only; a systemd
@@ -38,17 +56,16 @@ ttl_seconds = 300
 warn_below_pct = 20.0
 crit_below_pct = 5.0
 
-# 催用提醒:窗口将在该时长内重置、且剩余 ≥ use_above_pct 时,
-# 推送「配额即将重置,抓紧使用」。设为 0 关闭。
-# 例:"1h" = 重置前 1 小时提醒;"30m" = 前 30 分钟。
+# 催用提醒:窗口将在该时长内重置时开始评估预测浪费,推送「抓紧使用」。
+# 设为 0 关闭。例:"1h" = 重置前 1 小时提醒;"30m" = 前 30 分钟。
 remind_before = "1h"
-# 剩余低于此百分比则认为"已用够本",重置时不打扰。
-use_above_pct = 30.0
+# 按当前速率外推,预计浪费 ≥ waste_notify_pct → 普通提醒,≥ waste_urgent_pct → 紧急提醒。
+waste_notify_pct = 30.0
+waste_urgent_pct = 60.0
 
 [notify.gotify]
-url = "https://gotify.example.com"
-app_token = "Axxxxxxxxxxxx"  # 建议用 `submon token set gotify.app_token` 加密存储
-# 1-10,默认 5。
+# 通知凭据在 [[accounts]] 里(provider = "gotify"),这里只配推送行为。
+# 1-10,默认 5;紧急提醒自动 +3(上限 10)。
 priority = 5
 
 [statusline]
@@ -61,7 +78,7 @@ layout = "a"
 # statusline provider 选择:
 #   1. --provider 命令行 flag(最高)
 #   2. $ANTHROPIC_BASE_URL 自动识别(走各 provider 在自己文件里声明的规则)
-# 三级都没命中 → statusline 不显示配额段。
+# 都没命中 → statusline 不显示配额段。
 #
 # 想临时切换:ANTHROPIC_BASE_URL 改一下,或 `submon statusline --provider kimi`
 # 想看非当前会话的 provider:`submon status kimi` / `submon status opencode`

@@ -12,8 +12,10 @@ import (
 // 显式传 provider 名时仍然返回(未配置的情况交由 RunE 显示原因)。
 func TestTargetProvidersDefaultsHideUnconfigured(t *testing.T) {
 	cfg := config.Default()
-	cfg.Zhipu.Token = "sk-zhipu" // 已配
-	cfg.MiniMax.Token = "sk-mm"  // 已配
+	cfg.Accounts = []config.Account{
+		{Provider: "zhipu", Label: "default", Token: "sk-zhipu"}, // 已配
+		{Provider: "minimax", Label: "default", Token: "sk-mm"},  // 已配
+	}
 	// OpenCode 与 Kimi 故意未配。
 
 	got, err := targetProviders(nil, cfg)
@@ -63,8 +65,8 @@ func TestProviderConfigured(t *testing.T) {
 			t.Errorf("%s reported configured on empty config", p)
 		}
 	}
-	// 每个 provider 单独配 token,只有它自己算已配。
-	cfg.Zhipu.Token = "sk"
+	// 每个 provider 单独配账号,只有它自己算已配。
+	cfg.Accounts = []config.Account{{Provider: "zhipu", Label: "default", Token: "sk"}}
 	if !providerConfigured(model.ProviderZhipu, cfg) {
 		t.Error("zhipu not detected")
 	}
@@ -72,19 +74,21 @@ func TestProviderConfigured(t *testing.T) {
 		t.Error("minimax should not be configured")
 	}
 
-	cfg.MiniMax.Token = "sk"
-	cfg.OpenCode.Token = "sk"
-	cfg.Kimi.Token = "sk"
+	for _, p := range model.AllProviders() {
+		cfg.UpsertAccount(config.Account{Provider: string(p), Label: "default", Token: "sk"})
+	}
 	for _, p := range model.AllProviders() {
 		if !providerConfigured(p, cfg) {
 			t.Errorf("%s should be configured", p)
 		}
 	}
 
-	// BaseURL 不参与判定(zhipu / kimi 即使有 base_url 没 token 也不算)。
+	// BaseURL 不参与判定(有 base_url 没 token 的账号不算已配置)。
 	cfg2 := config.Default()
-	cfg2.Zhipu.BaseURL = "https://x"
-	cfg2.Kimi.BaseURL = "https://x"
+	cfg2.Accounts = []config.Account{
+		{Provider: "zhipu", Label: "default", BaseURL: "https://x"},
+		{Provider: "kimi", Label: "default", BaseURL: "https://x"},
+	}
 	if providerConfigured(model.ProviderZhipu, cfg2) {
 		t.Error("base_url alone should not count as configured")
 	}

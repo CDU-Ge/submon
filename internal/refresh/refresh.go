@@ -47,7 +47,7 @@ func One(ctx context.Context, name model.Provider, cfg *config.Config, log *slog
 }
 
 // Many 刷新 provider 下全部已配置 Key,每个 Key 独立取一次。
-// 顺序与 cfg.ProviderKeys 一致(顶层 default 在前,[[keys]] 在后)。
+// 顺序与 cfg.ProviderKeys 一致(文件内账号顺序,空 label 自动编号)。
 // 返回的 []Result 长度等于成功构造的 Source 数(失败的 Key 在 Err 里)。
 //
 // 取数语义对每个 Key 都是独立的 HTTP 调用 — provider 通常按账号独立

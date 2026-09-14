@@ -18,21 +18,21 @@ const HTTPTimeout = 15 * time.Second
 // DefaultZhipuBaseURL 是 zhipu 的内置默认基址(智谱开放平台)。
 const DefaultZhipuBaseURL = "https://open.bigmodel.cn/api/anthropic"
 
-// Build 构造 provider 默认 Key 的数据源(单 key 老路径)。
-// 凭据解析顺序:环境变量 > 配置文件 > 内置默认。
+// Build 构造 provider 默认账号的数据源(单账号老路径)。
+// 凭据解析顺序:环境变量 > 默认账号 > 内置默认。
 //
-//	zhipu:    ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL > [zhipu] token/base_url > 默认基址
-//	minimax:  MINIMAX_TOKEN > [minimax] token
-//	opencode: OPENCODE_API_KEY > [opencode] token
-//	kimi:     KIMI_CODING_API_KEY / KIMI_API_KEY > [kimi] token > 默认基址
+//	zhipu:    ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL > 默认账号 token/base_url > 内置默认基址
+//	minimax:  MINIMAX_TOKEN > 默认账号 token
+//	opencode: OPENCODE_API_KEY > 默认账号 token
+//	kimi:     KIMI_CODING_API_KEY / KIMI_API_KEY > 默认账号 token > 内置默认基址
 //
-// 调用方需传入已解密的配置(Config.DecryptSecrets)。多 key 场景请用 BuildAll。
+// 调用方需传入已解密的配置(Config.DecryptSecrets)。多账号场景请用 BuildAll。
 func Build(name model.Provider, cfg *config.Config) (Source, error) {
 	src, _, err := BuildOne(name, "", cfg)
 	return src, err
 }
 
-// HasEnvCredential 报告 provider 的默认 Key 凭据是否由环境变量提供。
+// HasEnvCredential 报告 provider 的默认账号凭据是否由环境变量提供。
 // env 名称与 BuildOne 的解析顺序保持一致 — check 体检用它区分
 // "未配置"与"env 兜底",避免空 token 也被 Build 成功造成的假阳性。
 func HasEnvCredential(name model.Provider) bool {
@@ -49,82 +49,84 @@ func HasEnvCredential(name model.Provider) bool {
 	return false
 }
 
-// BuildOne 给定 provider 与 label 构造一个 Source。Label 非空时只在该
-// label 下找 Token(查顶层默认 Key 或 [[keys]] 数组里对应 label);空时
-// 取 env > 顶层 Token(单 key 老语义,不看 [[keys]] 数组 — 避免误把
-// 命名 Key 也当默认返回)。
+// BuildOne 给定 provider 与 label 构造一个 Source。Label 空或 "default"
+// 时走默认账号(env 优先);其他 label 只在 [[accounts]] 里找同名账号。
+//
+// base_url 优先级保持老语义:默认账号 env > 账号 > 内置;命名账号
+// 账号 > env > 内置。
 func BuildOne(name model.Provider, label string, cfg *config.Config) (Source, string, error) {
+	isDefault := label == "" || label == config.DefaultLabel
+	acct := cfg.FindAccount(string(name), label)
+	if !isDefault && acct == nil {
+		return nil, "", &ErrNotConfigured{Reason: string(name) + " 无 key " + label}
+	}
+	// 命名账号在返回值里保留标签;默认账号统一归零(单 key 老路径)。
+	outLabel := label
+	if isDefault {
+		outLabel = ""
+	}
+
 	switch name {
 	case model.ProviderZhipu:
-		baseURL := firstNonEmpty(os.Getenv("ANTHROPIC_BASE_URL"), cfg.Zhipu.BaseURL, DefaultZhipuBaseURL)
-		token := firstNonEmpty(os.Getenv("ANTHROPIC_AUTH_TOKEN"), cfg.Zhipu.Token)
-		if label == "default" {
-			label = ""
+		baseURL := DefaultZhipuBaseURL
+		if acct != nil && acct.BaseURL != "" {
+			baseURL = acct.BaseURL
 		}
-		if label != "" {
-			k := findKey(cfg.Zhipu.Keys, label)
-			if k == nil {
-				return nil, "", &ErrNotConfigured{Reason: "zhipu 无 key " + label}
-			}
-			token = k.Token
-			if k.BaseURL != "" {
-				baseURL = k.BaseURL
+		if isDefault || acct == nil || acct.BaseURL == "" {
+			baseURL = firstNonEmpty(os.Getenv("ANTHROPIC_BASE_URL"), baseURL)
+		}
+		token := os.Getenv("ANTHROPIC_AUTH_TOKEN")
+		if acct != nil && acct.Token != "" {
+			if isDefault {
+				token = firstNonEmpty(token, acct.Token)
+			} else {
+				token = acct.Token
 			}
 		}
-		return &Zhipu{Token: token, BaseURL: originOf(baseURL)}, label, nil
+		return &Zhipu{Token: token, BaseURL: originOf(baseURL)}, outLabel, nil
 	case model.ProviderMinimax:
-		token := firstNonEmpty(os.Getenv("MINIMAX_TOKEN"), cfg.MiniMax.Token)
-		if label == "default" {
-			label = ""
-		}
-		if label != "" {
-			k := findKey(cfg.MiniMax.Keys, label)
-			if k == nil {
-				return nil, "", &ErrNotConfigured{Reason: "minimax 无 key " + label}
+		token := os.Getenv("MINIMAX_TOKEN")
+		if acct != nil && acct.Token != "" {
+			if isDefault {
+				token = firstNonEmpty(token, acct.Token)
+			} else {
+				token = acct.Token
 			}
-			token = k.Token
 		}
-		return &MiniMax{Token: token}, label, nil
+		return &MiniMax{Token: token}, outLabel, nil
 	case model.ProviderOpenCode:
-		token := firstNonEmpty(os.Getenv("OPENCODE_API_KEY"), cfg.OpenCode.Token)
-		if label == "default" {
-			label = ""
-		}
-		if label != "" {
-			k := findKey(cfg.OpenCode.Keys, label)
-			if k == nil {
-				return nil, "", &ErrNotConfigured{Reason: "opencode 无 key " + label}
+		token := os.Getenv("OPENCODE_API_KEY")
+		if acct != nil && acct.Token != "" {
+			if isDefault {
+				token = firstNonEmpty(token, acct.Token)
+			} else {
+				token = acct.Token
 			}
-			token = k.Token
 		}
-		return &OpenCode{Token: token}, label, nil
+		return &OpenCode{Token: token}, outLabel, nil
 	case model.ProviderKimi:
-		baseURL := firstNonEmpty(cfg.Kimi.BaseURL, DefaultKimiBaseURL)
-		token := firstNonEmpty(os.Getenv("KIMI_CODING_API_KEY"), os.Getenv("KIMI_API_KEY"), cfg.Kimi.Token)
-		if label == "default" {
-			label = ""
+		baseURL := DefaultKimiBaseURL
+		if acct != nil && acct.BaseURL != "" {
+			baseURL = acct.BaseURL
 		}
-		if label != "" {
-			k := findKey(cfg.Kimi.Keys, label)
-			if k == nil {
-				return nil, "", &ErrNotConfigured{Reason: "kimi 无 key " + label}
-			}
-			token = k.Token
-			if k.BaseURL != "" {
-				baseURL = k.BaseURL
+		token := firstNonEmpty(os.Getenv("KIMI_CODING_API_KEY"), os.Getenv("KIMI_API_KEY"))
+		if acct != nil && acct.Token != "" {
+			if isDefault {
+				token = firstNonEmpty(token, acct.Token)
+			} else {
+				token = acct.Token
 			}
 		}
-		return &Kimi{Token: token, BaseURL: baseURL}, label, nil
+		return &Kimi{Token: token, BaseURL: baseURL}, outLabel, nil
 	}
 	return nil, "", &ErrNotConfigured{Reason: "未知 provider: " + string(name)}
 }
 
-// BuildAll 构造 provider 下所有已配置 Key 的数据源。返回 []LabeledSource,
+// BuildAll 构造 provider 下所有已配置账号的数据源。返回 []LabeledSource,
 // 每个元素都是一个独立 Source,持有自己的 KeyLabel 并在 Fetch 时把它
 // 写入返回的 snapshot.KeyLabel。
 //
-// 顺序:顶层 default Token 在前(label = "default"),其后按 [[keys]] 数组
-// 顺序。空 token / 空 label 自动编号已由 cfg.ProviderKeys 处理。
+// 顺序与 cfg.ProviderKeys 一致(文件内账号顺序,空 label 自动编号)。
 func BuildAll(name model.Provider, cfg *config.Config) ([]LabeledSource, error) {
 	keys := cfg.ProviderKeys(name)
 	if len(keys) == 0 {
@@ -133,19 +135,19 @@ func BuildAll(name model.Provider, cfg *config.Config) ([]LabeledSource, error) 
 		if err != nil {
 			return nil, err
 		}
-		// 没有 config 时仍视为 "default" key,这样面板里也能显示。
+		// 没有 config 时仍视为 "default" 账号,这样面板里也能显示。
 		return []LabeledSource{{Source: src, Label: "default"}}, nil
 	}
 	out := make([]LabeledSource, 0, len(keys))
 	for _, k := range keys {
 		src, _, err := BuildOne(name, k.Label, cfg)
 		if err != nil {
-			continue // 跳过配置错误的 Key,不影响其他
+			continue // 跳过配置错误的账号,不影响其他
 		}
 		out = append(out, LabeledSource{Source: src, Label: k.Label})
 	}
 	if len(out) == 0 {
-		return nil, &ErrNotConfigured{Reason: string(name) + " 全部 key 不可用"}
+		return nil, &ErrNotConfigured{Reason: string(name) + " 全部账号不可用"}
 	}
 	return out, nil
 }
@@ -166,16 +168,6 @@ func (l LabeledSource) Fetch(ctx context.Context) (*model.Snapshot, error) {
 	}
 	snap.KeyLabel = l.Label
 	return snap, nil
-}
-
-// findKey 在 [[keys]] 数组里找 label 匹配的那条;找不到返回 nil。
-func findKey(keys []config.ProviderKey, label string) *config.ProviderKey {
-	for i := range keys {
-		if keys[i].Label == label {
-			return &keys[i]
-		}
-	}
-	return nil
 }
 
 func firstNonEmpty(vals ...string) string {

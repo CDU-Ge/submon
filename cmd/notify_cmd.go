@@ -38,7 +38,8 @@ var notifyTestCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		g := &notify.Gotify{URL: cfg.Notify.Gotify.URL, AppToken: cfg.Notify.Gotify.AppToken}
+		gURL, gToken := cfg.GotifyCredential()
+		g := &notify.Gotify{URL: gURL, AppToken: gToken}
 		if err := g.Send("submon 测试", "通知链路正常", cfg.Notify.Gotify.Priority); err != nil {
 			return err
 		}

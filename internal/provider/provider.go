@@ -53,7 +53,7 @@ type Rule struct {
 // DefaultDetectionRules 返回所有 provider 自己声明的检测规则聚合。
 // 顺序 = 调用顺序,平级时声明在前者赢。**每个 provider 在自己文件里
 // 写自己的 xxxRules(),这里只负责汇总 — 不允许把规则塞回这里。**
-// 加新 provider 时改自己文件,顺道让 Build / authRegistry 都跟上,
+// 加新 provider 时改自己文件,顺道让 Build / loginRegistry 都跟上,
 // 与项目其它地方同序(参见 CLAUDE.md 的"约定")。
 func DefaultDetectionRules() []Rule {
 	rules := make([]Rule, 0, 16)

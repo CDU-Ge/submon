@@ -114,10 +114,10 @@ type modelEntry struct {
 
 func (z *Zhipu) Fetch(ctx context.Context) (*model.Snapshot, error) {
 	if z.Token == "" {
-		return nil, &ErrNotConfigured{Reason: "缺少 zhipu token:设置 ANTHROPIC_AUTH_TOKEN 或配置 [zhipu] token"}
+		return nil, &ErrNotConfigured{Reason: "缺少 zhipu token:设置 ANTHROPIC_AUTH_TOKEN 或运行 `submon login` 配置 zhipu 账号"}
 	}
 	if z.BaseURL == "" {
-		return nil, &ErrNotConfigured{Reason: "缺少 zhipu base_url:设置 ANTHROPIC_BASE_URL 或配置 [zhipu] base_url"}
+		return nil, &ErrNotConfigured{Reason: "缺少 zhipu base_url:设置 ANTHROPIC_BASE_URL 或运行 `submon login` 配置 zhipu 账号"}
 	}
 
 	snap := &model.Snapshot{Provider: model.ProviderZhipu, FetchedAt: time.Now()}

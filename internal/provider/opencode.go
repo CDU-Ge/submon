@@ -71,7 +71,7 @@ func (o *OpenCode) resolveToken() (string, error) {
 	if v := os.Getenv("OPENCODE_API_KEY"); v != "" {
 		return v, nil
 	}
-	return "", &ErrNotConfigured{Reason: "缺少 opencode token:设置 OPENCODE_API_KEY 或配置 [opencode] token"}
+	return "", &ErrNotConfigured{Reason: "缺少 opencode token:设置 OPENCODE_API_KEY 或运行 `submon login` 配置 opencode 账号"}
 }
 
 // usageResponse mirrors the zen usage payload; every window is optional.

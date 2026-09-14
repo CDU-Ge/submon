@@ -14,41 +14,29 @@ import (
 	"github.com/ge/subscription-monitor/internal/secret"
 )
 
-// ProviderKey 是同一 provider 下的"一个账号/一套凭据"。
+// DefaultLabel 是"默认账号"的标签。空 label 在读取/写入时统一规范化为它。
+const DefaultLabel = "default"
+
+// Account 是一套已配置的凭据 —— 账号是唯一的凭据单位。
 //
-//	Label    用户可读标签,用于面板区分("alice" / "公司" / "default")。
-//	         空 Label 在 ProviderKeys 阶段会被规范化为 "default" 或 "key-N"。
-//	Token    与 provider 顶层 Token 同语义,加密或明文。
-//	BaseURL  可选覆盖;空时回落到 provider 顶层 BaseURL,再回落到内置默认。
+//	Provider 账号所属服务("zhipu" / "minimax" / "opencode" / "kimi" / "gotify")。
+//	Label    区分同 provider 的多个账号("alice" / "公司"),空 = default。
+//	Token    凭据密文或明文;gotify 时是 app_token。
+//	BaseURL  可选覆盖:provider 基址(智谱/Kimi),gotify 时是服务地址。
 //
-//	同一 provider 允许多个 Key — 同一账号多 key(轮换)、多账号(主备)
-//	都属此情形。ProviderKeys 是读取入口,合并顶层"default" 槽位与 [[keys]]。
-type ProviderKey struct {
-	Label   string `toml:"label"`
-	Token   string `toml:"token"`
-	BaseURL string `toml:"base_url,omitempty"`
+// 同一 provider 允许多个 Account(多账号主备、key 轮换)。ProviderKeys 是
+// 读取入口:按 provider 过滤、规范化 label、剔除空 token。
+type Account struct {
+	Provider string `toml:"provider"`
+	Label    string `toml:"label,omitempty"`
+	Token    string `toml:"token"`
+	BaseURL  string `toml:"base_url,omitempty"`
 }
 
 type Config struct {
-	Zhipu struct {
-		BaseURL string        `toml:"base_url"`
-		Token   string        `toml:"token"`
-		Keys    []ProviderKey `toml:"keys,omitempty"`
-	} `toml:"zhipu"`
-	MiniMax struct {
-		Token string        `toml:"token"`
-		Keys  []ProviderKey `toml:"keys,omitempty"`
-	} `toml:"minimax"`
-	OpenCode struct {
-		Token string        `toml:"token"`
-		Keys  []ProviderKey `toml:"keys,omitempty"`
-	} `toml:"opencode"`
-	Kimi struct {
-		BaseURL string        `toml:"base_url"`
-		Token   string        `toml:"token"`
-		Keys    []ProviderKey `toml:"keys,omitempty"`
-	} `toml:"kimi"`
-	Cache struct {
+	// Accounts 是全部凭据账号(gotify 也在内,作为通知凭据账号)。
+	Accounts []Account `toml:"accounts,omitempty"`
+	Cache    struct {
 		// TTLSeconds is how long a fetched snapshot is served from cache.
 		// Default 300 (5 min).
 		TTLSeconds int `toml:"ttl_seconds"`
@@ -67,8 +55,8 @@ type Config struct {
 		// WasteUrgentPct: 预计浪费 ≥ 此值 → 紧急提醒(高优先级推送 + 🔴 标题)。
 		WasteUrgentPct float64 `toml:"waste_urgent_pct"`
 		Gotify         struct {
-			URL      string `toml:"url"`
-			AppToken string `toml:"app_token"`
+			// URL / AppToken 已迁到 [[accounts]](provider = "gotify"),
+			// 这里只保留推送行为配置。
 			// Priority 是 Gotify 优先级(1-10),默认 5;紧急提醒自动 +3(上限 10)。
 			Priority int `toml:"priority"`
 		} `toml:"gotify"`
@@ -120,6 +108,9 @@ func Dir() (string, error) {
 
 // Load reads config.toml if present and applies env overrides. A missing file
 // is not an error.
+//
+// 旧格式([zhipu] token + [[zhipu.keys]])在内存中迁移为 [[accounts]];
+// 任何一次 Save(login / config --write)都会把文件落成新格式。
 func Load() (*Config, error) {
 	cfg := Default()
 	dir, err := Dir()
@@ -127,9 +118,13 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	path := filepath.Join(dir, "config.toml")
-	if _, err := os.Stat(path); err == nil {
-		if _, err := toml.DecodeFile(path, cfg); err != nil {
+	if raw, err := os.ReadFile(path); err == nil {
+		if err := toml.Unmarshal(raw, cfg); err != nil {
 			return nil, fmt.Errorf("parse %s: %w", path, err)
+		}
+		var legacy legacyConfig
+		if err := toml.Unmarshal(raw, &legacy); err == nil {
+			cfg.migrateLegacy(&legacy)
 		}
 	}
 	if cfg.Cache.TTLSeconds <= 0 {
@@ -188,7 +183,7 @@ func Path() (string, error) {
 }
 
 // Save writes the config back to disk atomically (0600: it holds encrypted
-// secrets, but keep it locked down regardless).
+// secrets, but keep it locked down regardless). 总是按新 schema 编码。
 func Save(c *Config) error {
 	path, err := Path()
 	if err != nil {
@@ -220,129 +215,143 @@ func Save(c *Config) error {
 	return os.Rename(name, path)
 }
 
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-// DecryptSecrets decrypts encrypted token fields in place. Plaintext values
+// DecryptSecrets decrypts encrypted account tokens in place. Plaintext values
 // pass through. Returns the first decryption error encountered (fields stay
 // as-is when decryption fails).
-//
-// 覆盖范围:每个 provider 的顶层 Token + [[keys]] 数组里每条 Key.Token。
-// 顶层 Key 先按 provider 顺序解,再统一扫一遍 Keys(数组顺序在所有
-// provider 之间连号,错误时仍记录首条不中断)。
 func (c *Config) DecryptSecrets() error {
-	fields := []*string{&c.Zhipu.Token, &c.MiniMax.Token, &c.OpenCode.Token, &c.Kimi.Token, &c.Notify.Gotify.AppToken}
 	var firstErr error
-	for _, f := range fields {
-		v := *f
-		if !secret.IsEncrypted(v) {
+	for i := range c.Accounts {
+		v := &c.Accounts[i].Token
+		if !secret.IsEncrypted(*v) {
 			continue
 		}
-		pt, err := secret.Decrypt(v)
+		pt, err := secret.Decrypt(*v)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
 			continue
 		}
-		*f = pt
-	}
-	for _, k := range c.allKeyTokens() {
-		v := *k
-		if !secret.IsEncrypted(v) {
-			continue
-		}
-		pt, err := secret.Decrypt(v)
-		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		*k = pt
+		*v = pt
 	}
 	return firstErr
 }
 
-// allKeyTokens 收集所有 [[provider.keys]] 的 token 字段指针。
-// 调用方负责解密后写回(指针原位修改)。
-func (c *Config) allKeyTokens() []*string {
-	var out []*string
-	for _, k := range c.Zhipu.Keys {
-		out = append(out, &k.Token)
-	}
-	for _, k := range c.MiniMax.Keys {
-		out = append(out, &k.Token)
-	}
-	for _, k := range c.OpenCode.Keys {
-		out = append(out, &k.Token)
-	}
-	for _, k := range c.Kimi.Keys {
-		out = append(out, &k.Token)
-	}
-	return out
-}
+// --- 账号访问 API ---
 
-// ProviderKeys 返回 provider 的全部已配置 Key。规则:
+// ProviderKeys 返回 provider 的全部可用账号(规范化后的副本)。规则:
 //
-//  1. 顶层 Token 非空 → 规范化为 label = "default" 的 Key(向老格式兼容)。
-//  2. [[keys]] 里的每条:空 label 自动编号 "key-N"(N 从 1 起,跨 provider 全局唯一
-//     仅按当前 provider 计数);非空 label 保留用户给定值。
-//  3. 同 label 出现多次:后面的覆盖前面(防止两份配置 merge 时悄无声息)。
-//  4. 返回值不含空 token 的 Key,调用方拿到的都是"至少有 Token 的" 列表。
+//  1. 只返回该 provider 的账号;空 label:第一个未命名账号为 "default",
+//     其余自动编号 "key-N"(跳过已占用的 label)。
+//  2. 空 token 的账号跳过(占位/base_url-only 账号不参与取数)。
+//  3. 同 label 出现多次:后面的覆盖前面(原位替换,保持第一次出现的顺序)。
 //
 // 调用方拿到的是副本,修改不影响 Config。
-func (c *Config) ProviderKeys(p model.Provider) []ProviderKey {
-	switch p {
-	case model.ProviderZhipu:
-		return mergeKeys(c.Zhipu.Token, c.Zhipu.Keys)
-	case model.ProviderMinimax:
-		return mergeKeys(c.MiniMax.Token, c.MiniMax.Keys)
-	case model.ProviderOpenCode:
-		return mergeKeys(c.OpenCode.Token, c.OpenCode.Keys)
-	case model.ProviderKimi:
-		return mergeKeys(c.Kimi.Token, c.Kimi.Keys)
+func (c *Config) ProviderKeys(p model.Provider) []Account {
+	return normalizeAccounts(c.Accounts, string(p))
+}
+
+// AccountsOf 返回任意 provider 名的规范化账号列表(覆盖 gotify 这种
+// 非配额 provider)。
+func (c *Config) AccountsOf(provider string) []Account {
+	return normalizeAccounts(c.Accounts, provider)
+}
+
+// FindAccount 返回 provider 下 label 匹配的原始账号;空 label 等同 default。
+// 找不到返回 nil。返回指针可直接修改(写回后 Save)。
+func (c *Config) FindAccount(provider, label string) *Account {
+	label = normalizeLabel(label)
+	for i := range c.Accounts {
+		a := &c.Accounts[i]
+		if a.Provider == provider && normalizeLabel(a.Label) == label {
+			return a
+		}
 	}
 	return nil
 }
 
-// mergeKeys 合并顶层 default token 与 [[keys]] 数组。
-//
-// 语义:
-//   - 顶层 Token 总是规范化为 Label="default",并放在第一位。
-//   - [[keys]] 里的空 Token 跳过(无效配置)。
-//   - 空 Label 自动编号 "key-N"(N 在当前合并列表中递增;与 default
-//     的 "default" 不冲突,也不冲突用户给的固定 label)。
-//   - 同 Label 出现多次:后者覆盖前者(TOML 里后写的赢),原位替换,顺序保留。
-func mergeKeys(defaultToken string, keys []ProviderKey) []ProviderKey {
-	out := make([]ProviderKey, 0, len(keys)+1)
-	if defaultToken != "" {
-		out = append(out, ProviderKey{Label: "default", Token: defaultToken})
+// UpsertAccount 插入或合并一个账号;空 label 规范化为 default。同
+// (provider, label) 已存在时只覆盖非空字段(Token / BaseURL)——
+// 这样 discover 可以单独导入 base_url 而不清掉已有 token。
+func (c *Config) UpsertAccount(a Account) {
+	a.Label = normalizeLabel(a.Label)
+	for i := range c.Accounts {
+		cur := &c.Accounts[i]
+		if cur.Provider == a.Provider && normalizeLabel(cur.Label) == a.Label {
+			if a.Token != "" {
+				cur.Token = a.Token
+			}
+			if a.BaseURL != "" {
+				cur.BaseURL = a.BaseURL
+			}
+			return
+		}
 	}
-	autoLabels := map[string]bool{}
-	for _, k := range keys {
-		if k.Token == "" {
+	c.Accounts = append(c.Accounts, a)
+}
+
+// RemoveAccount 删除 (provider, label) 账号,返回是否真的删了一条。
+// label 空/省略等同 default。
+func (c *Config) RemoveAccount(provider, label string) bool {
+	label = normalizeLabel(label)
+	for i := range c.Accounts {
+		a := c.Accounts[i]
+		if a.Provider == provider && normalizeLabel(a.Label) == label {
+			c.Accounts = append(c.Accounts[:i], c.Accounts[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// GotifyCredential 返回 gotify 通知凭据(服务地址 + app_token)。未配置时
+// 返回空串;cfg 需是 DecryptSecrets 后的产物。
+func (c *Config) GotifyCredential() (url, token string) {
+	if a := c.FindAccount("gotify", DefaultLabel); a != nil {
+		return a.BaseURL, a.Token
+	}
+	return "", ""
+}
+
+// normalizeLabel: 空 label → default。
+func normalizeLabel(label string) string {
+	if label == "" {
+		return DefaultLabel
+	}
+	return label
+}
+
+// normalizeAccounts 过滤 provider、规范化 label、跳过空 token、同 label
+// 后写覆盖前写。
+func normalizeAccounts(all []Account, provider string) []Account {
+	out := make([]Account, 0, len(all))
+	used := map[string]bool{}
+	for _, a := range all {
+		if a.Provider != provider || a.Token == "" {
 			continue
 		}
-		label := k.Label
+		label := a.Label
 		if label == "" {
-			label = nextAutoLabel(autoLabels)
+			// 第一个未命名账号即 default(单账号手写配置的直觉),
+			// 其余自动编号 key-N。
+			if !used[DefaultLabel] {
+				label = DefaultLabel
+			} else {
+				label = nextAutoLabel(used)
+			}
 		}
-		k.Label = label
+		used[label] = true
+		a.Label = label
 		replaced := false
 		for i := range out {
 			if out[i].Label == label {
-				out[i] = k
+				out[i] = a
 				replaced = true
 				break
 			}
 		}
 		if !replaced {
-			out = append(out, k)
+			out = append(out, a)
 		}
 	}
 	return out
@@ -357,4 +366,87 @@ func nextAutoLabel(used map[string]bool) string {
 			return l
 		}
 	}
+}
+
+// --- 旧格式迁移 ---
+
+// legacyConfig 只用于解码旧 schema(顶层 provider 表 + [[keys]] 数组 +
+// [notify.gotify] 凭据)。迁移完成后不再使用。
+type legacyConfig struct {
+	Zhipu struct {
+		BaseURL string      `toml:"base_url"`
+		Token   string      `toml:"token"`
+		Keys    []legacyKey `toml:"keys"`
+	} `toml:"zhipu"`
+	MiniMax struct {
+		Token string      `toml:"token"`
+		Keys  []legacyKey `toml:"keys"`
+	} `toml:"minimax"`
+	OpenCode struct {
+		Token string      `toml:"token"`
+		Keys  []legacyKey `toml:"keys"`
+	} `toml:"opencode"`
+	Kimi struct {
+		BaseURL string      `toml:"base_url"`
+		Token   string      `toml:"token"`
+		Keys    []legacyKey `toml:"keys"`
+	} `toml:"kimi"`
+	Notify struct {
+		Gotify struct {
+			URL      string `toml:"url"`
+			AppToken string `toml:"app_token"`
+		} `toml:"gotify"`
+	} `toml:"notify"`
+}
+
+type legacyKey struct {
+	Label   string `toml:"label"`
+	Token   string `toml:"token"`
+	BaseURL string `toml:"base_url"`
+}
+
+// migrateLegacy 把旧格式凭据折叠进 Accounts。已存在的 (provider,label)
+// 以新格式为准(不覆盖);空 label 分配 key-N(跳过显式 label)。
+func (c *Config) migrateLegacy(l *legacyConfig) {
+	migrateOne := func(provider, baseURL, token string, keys []legacyKey) {
+		if token != "" || baseURL != "" {
+			c.addMigrated(Account{Provider: provider, Label: DefaultLabel, Token: token, BaseURL: baseURL})
+		}
+		used := map[string]bool{}
+		for _, k := range keys {
+			if k.Label != "" {
+				used[k.Label] = true
+			}
+		}
+		for _, k := range keys {
+			if k.Token == "" {
+				continue
+			}
+			label := k.Label
+			if label == "" {
+				label = nextAutoLabel(used)
+			}
+			c.addMigrated(Account{Provider: provider, Label: label, Token: k.Token, BaseURL: k.BaseURL})
+		}
+	}
+	migrateOne("zhipu", l.Zhipu.BaseURL, l.Zhipu.Token, l.Zhipu.Keys)
+	migrateOne("minimax", "", l.MiniMax.Token, l.MiniMax.Keys)
+	migrateOne("opencode", "", l.OpenCode.Token, l.OpenCode.Keys)
+	migrateOne("kimi", l.Kimi.BaseURL, l.Kimi.Token, l.Kimi.Keys)
+	if l.Notify.Gotify.URL != "" || l.Notify.Gotify.AppToken != "" {
+		c.addMigrated(Account{
+			Provider: "gotify",
+			Label:    DefaultLabel,
+			Token:    l.Notify.Gotify.AppToken,
+			BaseURL:  l.Notify.Gotify.URL,
+		})
+	}
+}
+
+// addMigrated 仅当 (provider,label) 尚不存在时追加 —— 新格式优先。
+func (c *Config) addMigrated(a Account) {
+	if c.FindAccount(a.Provider, a.Label) != nil {
+		return
+	}
+	c.Accounts = append(c.Accounts, a)
 }

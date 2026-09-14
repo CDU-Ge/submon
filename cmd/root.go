@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/ge/subscription-monitor/internal/config"
 	"github.com/ge/subscription-monitor/internal/model"
 	"github.com/spf13/cobra"
 )
@@ -26,7 +27,7 @@ var rootCmd = &cobra.Command{
 	Long: "submon 监控订阅配额(智谱 bigmodel.cn / z.ai、MiniMax、OpenCode、Kimi),\n" +
 		"共享缓存避免状态栏高频调用冲击 API 限额。\n\n" +
 		"上手:\n" +
-		"  submon auth zhipu     配置凭据(其他可选: " + providerListHint() + ")\n" +
+		"  submon login          登录账号(可选: " + providerListHint() + "、gotify)\n" +
 		"  submon install        安装定时刷新与 Claude Code 状态栏\n" +
 		"  submon status         查看配额面板",
 	Version:       "dev",
@@ -55,6 +56,19 @@ var versionCmd = &cobra.Command{
 // SetVersion wires build-time version info (called from main).
 func SetVersion(version, commit string) {
 	rootCmd.Version = version + " (" + commit + ")"
+}
+
+// loadDecryptedConfig loads config.toml and decrypts encrypted account tokens
+// in place (tokens resolve to plaintext for the process lifetime).
+func loadDecryptedConfig() (*config.Config, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, err
+	}
+	if err := cfg.DecryptSecrets(); err != nil {
+		return cfg, fmt.Errorf("decrypt secrets: %w", err)
+	}
+	return cfg, nil
 }
 
 func Execute() {

@@ -136,7 +136,7 @@ func (k *Kimi) resolveToken() (string, error) {
 	if v := os.Getenv("KIMI_API_KEY"); v != "" {
 		return v, nil
 	}
-	return "", &ErrNotConfigured{Reason: "缺少 kimi token:设置 KIMI_CODING_API_KEY/KIMI_API_KEY 或配置 [kimi] token"}
+	return "", &ErrNotConfigured{Reason: "缺少 kimi token:设置 KIMI_CODING_API_KEY/KIMI_API_KEY 或运行 `submon login` 配置 kimi 账号"}
 }
 
 // httpStatusError lets the caller distinguish 404 (trigger fallback) from

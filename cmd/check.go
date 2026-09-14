@@ -62,6 +62,10 @@ var checkCmd = &cobra.Command{
 		if err != nil {
 			fail("读取配置: %v", err)
 		}
+		if cfg == nil {
+			// 解析失败时退化为默认配置,让后续检查逐项报,而不是 panic。
+			cfg = config.Default()
+		}
 
 		// ── 加密密钥 ──
 		fmt.Fprintln(out, "── 加密 ──")
@@ -73,38 +77,41 @@ var checkCmd = &cobra.Command{
 			}
 			pass("主密钥 %s %s", keyPath, note)
 		} else {
-			warn("主密钥尚未生成(首次 submon auth / enc 时自动创建)")
+			warn("主密钥尚未生成(首次 submon login / enc 时自动创建)")
 		}
 
 		// ── provider 凭据 ──
 		fmt.Fprintln(out, "── Provider 凭据 ──")
-		srcCfg, _ := config.Load() // 原始形态,用于判断明文/密文
+		srcCfg, err := config.Load() // 原始形态,用于判断明文/密文
+		if err != nil || srcCfg == nil {
+			srcCfg = config.Default()
+		}
 		for _, name := range model.AllProviders() {
 			disp := strings.ToUpper(string(name))
-			secrets := authSecretValues(string(name), srcCfg)
-			if len(secrets) == 0 {
+			accounts := srcCfg.ProviderKeys(name)
+			if len(accounts) == 0 {
 				// Build 对空 token 也构造成功 — 已配置与否要看 env / 配置真值,
 				// 否则全新环境会得到"凭据就绪"的假阳性。
 				if provider.HasEnvCredential(name) {
 					pass("%s: 凭据就绪(环境变量)", disp)
 				} else {
-					warn("%s: 未配置(运行 submon auth %s)", disp, name)
+					warn("%s: 未配置(运行 submon login)", disp)
 				}
 				continue
 			}
 			var problems []string
-			for _, s := range secrets {
+			for _, a := range accounts {
 				switch {
-				case !secret.IsEncrypted(s):
-					problems = append(problems, "存在明文(重新运行 submon auth "+string(name)+")")
+				case !secret.IsEncrypted(a.Token):
+					problems = append(problems, a.Label+" 存在明文(重新运行 submon login)")
 				default:
-					if _, err := secret.Decrypt(s); err != nil {
-						problems = append(problems, "解密失败("+err.Error()+")")
+					if _, err := secret.Decrypt(a.Token); err != nil {
+						problems = append(problems, a.Label+" 解密失败("+err.Error()+")")
 					}
 				}
 			}
 			if len(problems) == 0 {
-				pass("%s: 凭据就绪(%d 个 key,加密存储)", disp, len(secrets))
+				pass("%s: 凭据就绪(%d 个账号,加密存储)", disp, len(accounts))
 			} else {
 				fail("%s: %s", disp, strings.Join(problems, "; "))
 			}
@@ -141,16 +148,18 @@ var checkCmd = &cobra.Command{
 
 		// ── 通知 ──
 		fmt.Fprintln(out, "── 通知 ──")
-		if cfg.Notify.Gotify.URL == "" || cfg.Notify.Gotify.AppToken == "" {
-			warn("Gotify 未配置([notify.gotify] url / app_token),告警将无法推送")
+		gURL, gTokenRaw := srcCfg.GotifyCredential()
+		_, gToken := cfg.GotifyCredential()
+		if gURL == "" || gTokenRaw == "" {
+			warn("Gotify 未配置([[accounts]] 中 provider = \"gotify\"),告警将无法推送")
 		} else {
-			if secret.IsEncrypted(cfg.Notify.Gotify.AppToken) {
+			if secret.IsEncrypted(gTokenRaw) {
 				pass("Gotify: url + 加密 app_token 已配置")
 			} else {
-				warn("Gotify app_token 为明文,建议重新运行: submon auth gotify")
+				warn("Gotify app_token 为明文,建议重新运行: submon login")
 			}
 			// 推送链路实测。
-			g := &notify.Gotify{URL: cfg.Notify.Gotify.URL, AppToken: cfg.Notify.Gotify.AppToken}
+			g := &notify.Gotify{URL: gURL, AppToken: gToken}
 			if err := g.Send("submon check", "配置检查测试推送", cfg.Notify.Gotify.Priority); err != nil {
 				fail("Gotify 测试推送失败: %v", err)
 			} else {

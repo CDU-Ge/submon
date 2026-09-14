@@ -100,7 +100,7 @@ func (m *MiniMax) resolveToken() (string, error) {
 	if v := os.Getenv("MINIMAX_TOKEN"); v != "" {
 		return v, nil
 	}
-	return "", &ErrNotConfigured{Reason: "缺少 minimax token:设置 MINIMAX_TOKEN 或配置 [minimax] token"}
+	return "", &ErrNotConfigured{Reason: "缺少 minimax token:设置 MINIMAX_TOKEN 或运行 `submon login` 配置 minimax 账号"}
 }
 
 // remainsResponse: fields live at the top level (no data wrapper);

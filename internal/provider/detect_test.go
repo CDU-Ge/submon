@@ -143,7 +143,7 @@ func TestDefaultRulesCoverAllProviders(t *testing.T) {
 // TestEachProviderDeclaresItsOwnRules 守住"检测规则由各 provider 自己
 // 声明"的约束:每个 model.AllProviders() 都对应一个 xxxRules() 函数,
 // 且函数返回值非空。新增 provider 时:**实现 + xxxRules() + Build +
-// authRegistry + DefaultDetectionRules 聚合** — 任何一项漏了都会被
+// loginRegistry + DefaultDetectionRules 聚合** — 任何一项漏了都会被
 // 下列两条之一拦住。
 func TestEachProviderDeclaresItsOwnRules(t *testing.T) {
 	type ruleFn func() []Rule

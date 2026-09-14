@@ -26,7 +26,7 @@ var statusCmd = &cobra.Command{
 		"的会显示原因。\n\n" +
 		"provider: zhipu | minimax | opencode | kimi。省略则仅展示已配置的。\n" +
 		"缓存未过期时直接读缓存;--force 强制刷新并更新缓存。\n\n" +
-		"多 key 场景:同一 provider 配置了多个 [[keys]] 时,每个 key 单独\n" +
+		"多账号场景:同一 provider 登录了多个账号时,每个账号单独\n" +
 		"展示一段(标题里带 label)。",
 	Example: "  submon status            # 仅展示已配置的 provider\n" +
 		"  submon status zhipu      # 只看智谱(无论是否已配置)\n" +
@@ -55,7 +55,7 @@ var statusCmd = &cobra.Command{
 		if len(names) == 0 {
 			out := cmd.OutOrStdout()
 			fmt.Fprintln(out, "尚未配置任何 provider。从这里开始:")
-			fmt.Fprintf(out, "  submon auth <provider>   配置凭据(可选: %s)\n", providerListHint())
+			fmt.Fprintf(out, "  submon login             登录账号(可选: %s)\n", providerListHint())
 			fmt.Fprintln(out, "  submon install           安装定时刷新与 Claude Code 状态栏")
 			fmt.Fprintln(out, "详情: submon --help")
 			return nil
@@ -174,7 +174,7 @@ var statusCmd = &cobra.Command{
 		}
 		if len(failed) > 0 {
 			fmt.Fprintln(cmd.ErrOrStderr(), "\n建议:")
-			fmt.Fprintln(cmd.ErrOrStderr(), "  - token 失效:submon auth <provider> 重新配置")
+			fmt.Fprintln(cmd.ErrOrStderr(), "  - token 失效:submon login 重新登录")
 			fmt.Fprintln(cmd.ErrOrStderr(), "  - 网络异常:重新运行 submon status --force")
 			return fmt.Errorf("%d 项 provider 不可用 — 详见上方面板", len(failed))
 		}
@@ -214,7 +214,7 @@ func rowDispName(p model.Provider, label string) string {
 }
 
 // providerConfigured 判断 provider 是否至少有一个已配置 Key。
-// 顶层 Token 或 [[keys]] 任一非空即算。这里 cfg 必须是 loadDecryptedConfig
+// 任一账号存在即算(ProviderKeys 非空)。这里 cfg 必须是 loadDecryptedConfig
 // 的产物(encrypted 已展开),否则 enc:v1:... 会被误判为"已配置"。
 func providerConfigured(p model.Provider, cfg *config.Config) bool {
 	return len(cfg.ProviderKeys(p)) > 0

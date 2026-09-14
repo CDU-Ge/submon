@@ -102,7 +102,7 @@ submon install --print        # preview generated units
 submon install --uninstall    # stop, disable and remove
 ```
 
-Credentials are never baked into unit files — use `submon token set` or
+Credentials are never baked into unit files — use `submon login` or
 `~/.config/environment.d/`. On machines without a systemd user session the
 units are still written, with the manual enable command printed.
 
@@ -119,35 +119,43 @@ submon config          # preview diff (tokens masked)
 submon config --write  # apply
 ```
 
-### `submon notify --test`
+### `submon notify test`
 
 Send a test Gotify push to verify connectivity.
 
-### `submon cache [--clear]`
+### `submon cache [clear]`
 
 Dump / delete the cache file (`~/.cache/submon/cache.json`).
 
-### `submon token` — encrypted credential storage
+### `submon login` — encrypted credential storage
 
-Tokens are encrypted at rest with **AES-256-GCM**; config.toml only ever
-holds `enc:v1:...` ciphertext. The master key is self-managed (no OS keyring
-dependency): generated on first use and stored at
-`~/.config/submon/secret.key` (0600). Keep that file out of backups/sync if
-you sync config.toml.
+Credentials are stored in `[[accounts]]` and encrypted at rest with
+**AES-256-GCM**; config.toml only ever holds `enc:v1:...` ciphertext. The
+master key is self-managed (no OS keyring dependency): generated on first use
+and stored at `~/.config/submon/secret.key` (0600). Keep that file out of
+backups/sync if you sync config.toml.
 
 ```sh
-submon token set zhipu.token            # interactive no-echo prompt
-submon token set minimax.token -        # read from stdin
-submon token set opencode.token         # OPENCODE_API_KEY, encrypted at rest
-submon token ls                         # storage form overview (masked)
-submon token get zhipu.token            # decrypt for scripting
-submon token unset zhipu.token
+submon login                 # interactive: provider → label → token
+submon login ls              # list accounts and storage form (masked)
+submon login remove          # interactive account removal
+submon login discover        # scan env / Claude Code settings and import
 ```
 
-Slots: `zhipu.token`, `minimax.token`, `opencode.token`, `gotify.app_token`.
+For scripts, feed the fields on stdin (never argv):
 
-`submon config` migrates plaintext tokens (and the legacy
-`~/.minimax-config.json`) to encrypted form in one pass.
+```sh
+printf 'zhipu\nalice\n%s\n\n' "$TOKEN" | submon login
+```
+
+Each account is `{provider, label, token, base_url?}`; the same provider can
+have multiple accounts (different labels) and each is fetched separately.
+Gotify is a first-class account too (`provider = "gotify"`, `base_url` =
+server URL, `token` = app_token).
+
+`submon config --write` migrates the old `[zhipu] token` / `[[zhipu.keys]]`
+schema and plaintext tokens (including the legacy `~/.minimax-config.json`)
+in one pass.
 
 ### `submon enc`
 
@@ -162,13 +170,16 @@ echo "enc:v1:..." | submon enc -d
 ## Configuration
 
 `~/.config/submon/config.toml` — see [`submon.example.toml`](submon.example.toml).
-Credentials resolve in this order (encrypted config value wins):
+Credentials live in `[[accounts]]` (`provider` / `label` / `token` /
+`base_url`); environment variables still win for the default account:
 
-| provider | config | environment |
+| provider | account | environment |
 |---|---|---|
-| zhipu | `[zhipu] token` (encrypted) / `base_url` | `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL` |
-| minimax | `[minimax] token` (encrypted) | `MINIMAX_TOKEN` |
-| opencode | `[opencode] token` (encrypted) | `OPENCODE_API_KEY` |
+| zhipu | `provider = "zhipu"` token (encrypted) / base_url | `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL` |
+| minimax | `provider = "minimax"` token (encrypted) | `MINIMAX_TOKEN` |
+| opencode | `provider = "opencode"` token (encrypted) | `OPENCODE_API_KEY` |
+| kimi | `provider = "kimi"` token (encrypted) / base_url | `KIMI_CODING_API_KEY` / `KIMI_API_KEY` |
+| gotify | `provider = "gotify"` app_token (encrypted) / base_url | — |
 
 ## Build
 

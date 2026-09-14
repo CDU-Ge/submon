@@ -11,7 +11,7 @@ import (
 // clig.deck 的 help.md 要求帮助以示例开头。每个子命令至少给 1 行。
 func TestCommandsHaveExamples(t *testing.T) {
 	wantExample := []*cobra.Command{
-		statusCmd, watchCmd, authCmd, installCmd, checkCmd,
+		statusCmd, watchCmd, loginCmd, installCmd, checkCmd,
 		versionCmd, notifyCmd, cacheCmd, configCmd,
 	}
 	for _, c := range wantExample {
@@ -44,14 +44,25 @@ func TestRootCmdHasNoColorFlag(t *testing.T) {
 	}
 }
 
-// TestTokenCommandMarkedDeprecated 验证 token 子命令标了 Deprecated,
-// clig.deck future-proofing.md 要求旧命令留废弃提示而不是悄悄删。
-func TestTokenCommandMarkedDeprecated(t *testing.T) {
-	if tokenCmd == nil {
-		t.Fatal("tokenCmd 应为非 nil(保留向后兼容)")
+// TestDiscoverAttachedToLogin 验证 discover 挂在 login 下(凭据入口统一),
+// 且旧 auth 子命令已不存在。
+func TestDiscoverAttachedToLogin(t *testing.T) {
+	found := false
+	for _, c := range loginCmd.Commands() {
+		if c.Name() == "discover" {
+			found = true
+		}
 	}
-	if tokenCmd.Deprecated == "" {
-		t.Error("tokenCmd 应设 Deprecated 字段,引导用户改用 auth")
+	if !found {
+		t.Error("discover 应为 login 的子命令")
+	}
+	for _, c := range rootCmd.Commands() {
+		if c.Name() == "auth" {
+			t.Error("auth 命令应已移除,统一为 login")
+		}
+		if c.Name() == "token" {
+			t.Error("token 命令应已移除(login 是其替代)")
+		}
 	}
 }
 

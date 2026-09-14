@@ -233,7 +233,7 @@ func TestKimiFetchResetInSeconds(t *testing.T) {
 func TestKimiBuildAndDetect(t *testing.T) {
 	t.Setenv("KIMI_CODING_API_KEY", "env-token")
 	cfg := config.Default()
-	cfg.Kimi.Token = "cfg-token"
+	cfg.Accounts = []config.Account{{Provider: "kimi", Label: "default", Token: "cfg-token"}}
 	src, err := Build(model.ProviderKimi, cfg)
 	if err != nil {
 		t.Fatal(err)

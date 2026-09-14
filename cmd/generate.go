@@ -25,7 +25,7 @@ var configCmd = &cobra.Command{
 		"会迁移并加密;明文 token 也会转为加密。默认只显示差异,--write 写入。",
 	Example: "  submon config            # 预览与现有文件的差异,不写入\n" +
 		"  submon config --write    # 确认无误后实际写入\n" +
-		"  submon auth zhipu        # 凭据配置走 auth(自动加密)",
+		"  submon login             # 凭据配置走 login(自动加密)",
 	RunE: runConfigMigrate,
 }
 
@@ -54,17 +54,20 @@ func runConfigMigrate(cmd *cobra.Command, args []string) error {
 		migrated = slot
 		return enc
 	}
-	if cfg.MiniMax.Token == "" {
+	if cfg.FindAccount("minimax", config.DefaultLabel) == nil {
 		if tok := provider.ReadLegacyMinimaxToken(); tok != "" {
-			cfg.MiniMax.Token = migrate("minimax.token (from ~/.minimax-config.json)", tok)
+			cfg.UpsertAccount(config.Account{
+				Provider: "minimax",
+				Label:    config.DefaultLabel,
+				Token:    migrate("minimax.token (from ~/.minimax-config.json)", tok),
+			})
 		}
 	}
 	// Encrypt any plaintext tokens already in config.toml.
-	cfg.Zhipu.Token = migrate("zhipu.token", cfg.Zhipu.Token)
-	cfg.MiniMax.Token = migrate("minimax.token", cfg.MiniMax.Token)
-	cfg.OpenCode.Token = migrate("opencode.token", cfg.OpenCode.Token)
-	cfg.Kimi.Token = migrate("kimi.token", cfg.Kimi.Token)
-	cfg.Notify.Gotify.AppToken = migrate("gotify.app_token", cfg.Notify.Gotify.AppToken)
+	for i := range cfg.Accounts {
+		slot := cfg.Accounts[i].Provider + "." + cfg.Accounts[i].Label + ".token"
+		cfg.Accounts[i].Token = migrate(slot, cfg.Accounts[i].Token)
+	}
 
 	var buf bytes.Buffer
 	enc := toml.NewEncoder(&buf)
