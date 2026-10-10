@@ -1,11 +1,11 @@
 // Package secret encrypts provider tokens at rest with AES-256-GCM.
 //
 // Key management is fully self-contained: a random 32-byte master key is
-// generated on first use and stored base64-encoded at
-// ~/.config/submon/secret.key (0600, XDG_CONFIG_HOME respected). No OS
-// keyring or external credential store is involved — the goal is simply to
-// keep plaintext secrets out of config.toml (which may be synced, backed up
-// or shared), while the key file stays local.
+// generated on first use and stored base64-encoded at <config dir>/secret.key
+// (0600; POSIX ~/.config/submon/secret.key, Windows
+// %AppData%\submon\secret.key). No OS keyring or external credential store is
+// involved — the goal is simply to keep plaintext secrets out of config.toml
+// (which may be synced, backed up or shared), while the key file stays local.
 //
 // Encrypted values are stored as "enc:v1:<base64(nonce)>:<base64(ciphertext)>"
 // wherever a plaintext token used to live. Decrypt() passes plaintext through
@@ -22,19 +22,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/ge/subscription-monitor/internal/appdir"
 )
 
 // Prefix marks encrypted values.
 const Prefix = "enc:v1:"
 
-// keyFilePath resolves the master key location.
+// keyFilePath resolves the master key location: <config dir>/secret.key
+// (POSIX ~/.config/submon, Windows %AppData%\submon — see internal/appdir)。
+// 目录解析失败(极端环境)时退回当前目录,报错留给后续读写。
 func keyFilePath() string {
-	dir := os.Getenv("XDG_CONFIG_HOME")
-	if dir == "" {
-		home, _ := os.UserHomeDir()
-		dir = filepath.Join(home, ".config")
+	dir, err := appdir.Config()
+	if err != nil {
+		return "secret.key"
 	}
-	return filepath.Join(dir, "submon", "secret.key")
+	return filepath.Join(dir, "secret.key")
 }
 
 // masterKey returns the 32-byte master key, creating and persisting one on

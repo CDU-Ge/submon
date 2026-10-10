@@ -37,10 +37,10 @@ func loginInput(p loginTestProvider, label string) string {
 	return p.Name + "\n" + label + "\n" + p.Input
 }
 
-// withTempConfig 把 XDG_CONFIG_HOME 重定向到 tempdir。t.Cleanup 还原全局状态。
+// withTempConfig 把配置目录重定向到 tempdir(三平台,见 isolateAppDirs)。
 func withTempConfig(t *testing.T) {
 	t.Helper()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateAppDirs(t, t.TempDir())
 }
 
 // withStdin 把 os.Stdin 替换成含 input 的可读文件。readLoginField 看到普通
@@ -427,7 +427,7 @@ func TestProviderKeysIsTruthForConfigured(t *testing.T) {
 // 直接 nil deref。本测试通过 pipe fd 模拟 TTY,直接打 readLoginField 的
 // useTerm=true / 非 Secret 分支。
 func TestReadLoginFieldTTYNonSecret(t *testing.T) {
-	// readLineFromFD 单测:pipe 写端塞输入,读端给 readLineFromFD。
+	// readLineRaw 单测:pipe 写端塞输入,读端给 readLineRaw。
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -437,9 +437,9 @@ func TestReadLoginFieldTTYNonSecret(t *testing.T) {
 		defer w.Close()
 		_, _ = w.WriteString("https://api.example.com/v1\n")
 	}()
-	got, err := readLineFromFD(int(r.Fd()))
+	got, err := readLineRaw(r)
 	if err != nil {
-		t.Fatalf("readLineFromFD: %v", err)
+		t.Fatalf("readLineRaw: %v", err)
 	}
 	if got != "https://api.example.com/v1" {
 		t.Errorf("got %q, want https://api.example.com/v1", got)

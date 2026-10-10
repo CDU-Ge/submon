@@ -36,6 +36,7 @@ var rootCmd = &cobra.Command{
 	// PersistentPreRun 在任何子命令 RunE 之前跑一次 — 此时 cobra 已
 	// 解析完 argv(--no-color flag 已确定),根据 useColor() 刷新 ansi* 变量。
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		prepareConsole()
 		refreshColorState()
 		return nil
 	},

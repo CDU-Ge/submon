@@ -7,25 +7,30 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ge/subscription-monitor/internal/appdir"
 	"github.com/spf13/cobra"
 )
 
-// completionInstallCmd 一键安装 shell 自动补全:生成补全脚本到
-// ~/.local/share/submon/completion/<shell>,然后往 rc 文件追加一段
+// completionInstallCmd 一键安装 shell 自动补全:生成补全脚本到平台数据目录
+// (POSIX ~/.local/share/submon/completion,Windows %LocalAppData%\submon\completion),
+// 然后往 rc / profile 文件追加一段
 // 受标记保护的加载块(幂等:已存在则只更新脚本)。写 rc 前自动做
 // 时间戳备份(<rc>.submon-bak-<ts>),卸载时还原现场。
 //
-//	zsh:  脚本自身 source 即可(compdef 已由 compinit 提供)
-//	bash: 用 bash-completion V2 脚本,直接 source
-//	fish: 生成到 vendor.completions.d 即被 fish 自动加载,不改 rc
+//	zsh:        脚本自身 source 即可(compdef 已由 compinit 提供)
+//	bash:       用 bash-completion V2 脚本,直接 source
+//	fish:       生成到 vendor.completions.d 即被 fish 自动加载,不改 rc
+//	powershell: 生成 submon.ps1(Register-ArgumentCompleter),写入 $PROFILE
 var completionInstallCmd = &cobra.Command{
 	Use:   "completion-install",
 	Short: "安装 shell 补全并写入 rc 文件",
-	Long: "检测当前 shell($SHELL),生成补全脚本并自动写入 rc 文件:\n\n" +
-		"  zsh:  追加加载块到 ~/.zshrc(需已加载 compinit;没有则一并补上)\n" +
-		"  bash: 追加加载块到 ~/.bashrc\n" +
-		"  fish: 脚本放入 ~/.config/fish/completions/,无需改 rc\n\n" +
-		"修改 rc 前自动备份为 <rc>.submon-bak-<时间戳>。\n" +
+	Long: "检测当前 shell($SHELL,Windows 上看 PowerShell),生成补全脚本并\n" +
+		"自动写入 rc / profile 文件:\n\n" +
+		"  zsh:        追加加载块到 ~/.zshrc(需已加载 compinit;没有则一并补上)\n" +
+		"  bash:       追加加载块到 ~/.bashrc\n" +
+		"  fish:       脚本放入 ~/.config/fish/completions/,无需改 rc\n" +
+		"  powershell: 写入 $PROFILE(PowerShell 5.1 / 7 各自的实际路径)\n\n" +
+		"修改前自动备份为 <rc>.submon-bak-<时间戳>。\n" +
 		"重复运行幂等(只刷新脚本,不重复追加)。\n" +
 		"撤销: submon completion uninstall",
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -34,7 +39,7 @@ var completionInstallCmd = &cobra.Command{
 			shell = detectShell()
 		}
 		if shell == "" {
-			return fmt.Errorf("无法检测 shell,请用 --shell bash|zsh|fish 指定")
+			return fmt.Errorf("无法检测 shell,请用 --shell bash|zsh|fish|powershell 指定")
 		}
 		return installCompletion(cmd, shell)
 	},
@@ -52,20 +57,22 @@ func detectShell() string {
 			return s
 		}
 	}
+	// Windows 上没有 $SHELL;pwsh 会写 PSModulePath,Windows PowerShell 也靠
+	// 它定位模块,所以它出现即视为 PowerShell 会话。
+	if strings.Contains(sh, "pwsh") || os.Getenv("PSModulePath") != "" {
+		return "powershell"
+	}
 	return ""
 }
 
-// completion 数据目录:XDG_DATA_HOME/submon/completion(默认 ~/.local/share/...)。
+// completionDir 是补全脚本的落盘目录(POSIX 走 XDG_DATA_HOME,
+// Windows 走 %LocalAppData% — 见 internal/appdir)。
 func completionDir() (string, error) {
-	base := os.Getenv("XDG_DATA_HOME")
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		base = filepath.Join(home, ".local", "share")
+	base, err := appdir.Data()
+	if err != nil {
+		return "", err
 	}
-	return filepath.Join(base, "submon", "completion"), nil
+	return filepath.Join(base, "completion"), nil
 }
 
 func installCompletion(cmd *cobra.Command, shell string) error {
@@ -134,12 +141,29 @@ func installCompletion(cmd *cobra.Command, shell string) error {
 		fmt.Fprintln(cmd.OutOrStdout(), "已安装:", fishPath)
 		fmt.Fprintln(cmd.OutOrStdout(), "fish 自动加载,新开 shell 即生效")
 		return nil
+	case "powershell":
+		scriptPath = filepath.Join(dir, "submon.ps1")
+		f, err := os.Create(scriptPath)
+		if err != nil {
+			return err
+		}
+		err = rootCmd.GenPowerShellCompletionWithDesc(f)
+		f.Close()
+		if err != nil {
+			return err
+		}
+		b.WriteString(managedMark + "\n")
+		b.WriteString(". \"" + scriptPath + "\"\n")
 	default:
-		return fmt.Errorf("不支持的 shell %q(bash|zsh|fish)", shell)
+		return fmt.Errorf("不支持的 shell %q(bash|zsh|fish|powershell)", shell)
 	}
 
 	rcPath, err := shellRCPath(shell)
 	if err != nil {
+		return err
+	}
+	// rc / profile 可能是首次创建(如 PowerShell 的 $PROFILE 目录还不存在)。
+	if err := os.MkdirAll(filepath.Dir(rcPath), 0o755); err != nil {
 		return err
 	}
 
@@ -147,13 +171,18 @@ func installCompletion(cmd *cobra.Command, shell string) error {
 		return err
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), "已安装补全脚本:", scriptPath)
-	fmt.Fprintln(cmd.OutOrStdout(), "已写入 rc:", rcPath)
-	fmt.Fprintln(cmd.OutOrStdout(), "新开 shell 或 source 后生效")
+	fmt.Fprintln(cmd.OutOrStdout(), "已写入启动脚本:", rcPath)
+	fmt.Fprintln(cmd.OutOrStdout(), "重开终端(或 source 该文件)后生效")
 	return nil
 }
 
-// shellRCPath 返回 rc 文件路径(不存在也返回路径,首次会创建)。
+// shellRCPath 返回 rc / profile 文件路径(不存在也返回路径,首次会创建)。
 func shellRCPath(shell string) (string, error) {
+	switch shell {
+	case "powershell":
+		// PowerShell 的 profile 路径随版本与宿主变化,直接问它自己。
+		return powershellProfilePath()
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -238,7 +267,7 @@ func uninstallCompletion(cmd *cobra.Command) error {
 		shell = detectShell()
 	}
 	if shell == "" {
-		return fmt.Errorf("无法检测 shell,请用 --shell bash|zsh|fish 指定")
+		return fmt.Errorf("无法检测 shell,请用 --shell bash|zsh|fish|powershell 指定")
 	}
 	if rcPath, err := shellRCPath(shell); err == nil {
 		if raw, err := os.ReadFile(rcPath); err == nil {
@@ -246,7 +275,7 @@ func uninstallCompletion(cmd *cobra.Command) error {
 				if err := writeFileWithBackup(rcPath, []byte(replaceManagedBlock(string(raw), "")), raw); err != nil {
 					return err
 				}
-				fmt.Fprintln(cmd.OutOrStdout(), "已从 rc 移除加载块:", rcPath)
+				fmt.Fprintln(cmd.OutOrStdout(), "已从启动脚本移除加载块:", rcPath)
 			}
 		}
 	}
@@ -267,7 +296,7 @@ var completionUninstallCmd = &cobra.Command{
 }
 
 func init() {
-	completionInstallCmd.Flags().StringVar(&compShell, "shell", "", "指定 shell(bash|zsh|fish),默认检测 $SHELL")
+	completionInstallCmd.Flags().StringVar(&compShell, "shell", "", "指定 shell(bash|zsh|fish|powershell),默认检测会话")
 	completionInstallCmd.Flags().BoolVar(&compUninstll, "uninstall", false, "撤销安装并还原 rc")
 	rootCmd.AddCommand(completionInstallCmd)
 	rootCmd.AddCommand(completionUninstallCmd)

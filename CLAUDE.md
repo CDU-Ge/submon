@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目
 
-`submon` — Go 单二进制订阅配额监控(智谱 bigmodel.cn/z.ai + MiniMax + OpenCode zen),服务三个场景:人查(`status`)、Claude Code 状态栏(`statusline`,高频调用、只读缓存)、定时催用提醒(`watch` + systemd timer + Gotify)。UI 文案面向简体中文用户,所有用户可见字符串用中文。
+`submon` — Go 单二进制订阅配额监控(智谱 bigmodel.cn/z.ai + MiniMax + OpenCode zen),服务三个场景:人查(`status`)、Claude Code 状态栏(`statusline`,高频调用、只读缓存)、定时催用提醒(`watch` + 定时任务(systemd timer / 任务计划程序)+ Gotify)。UI 文案面向简体中文用户,所有用户可见字符串用中文。
 
 ## 常用命令
 
@@ -14,7 +14,8 @@ make install        # 安装到 ~/.local/bin/submon
 make test           # 全部测试
 go test ./internal/predict/ -run TestWeeklyFate -v   # 单个测试
 make vet / make fmt # 静态检查 / gofmt + go mod tidy
-make release        # 交叉编译 linux/darwin 到 dist/
+make release        # 交叉编译 linux/darwin/windows 到 dist/
+GOOS=windows go build ./... && GOOS=windows go vet ./...   # Windows 回归(本机跑不了 windows 二进制,至少守住编译 + vet)
 ```
 
 无独立 lint 工具;`go vet` 是唯一静态检查,gofmt 必须零输出(`make fmt`)。
@@ -57,8 +58,21 @@ Gotify 走同一安全等级:URL 明文、`app_token` 加密,与 provider 同流
 
 测试规范:统一在 `cmd/login_test.go` 用 `loginTestProviders` 表驱动,每个 provider 跑 add/ls/remove 三条用例,新增 provider 必须扩同一张表;`TestLoginRegistryCoversAllProviders` 与 `TestLoginRejectsUnknownProvider` 守住"注册表 = 唯一真源"约束。
 
+## 平台支持(Linux / macOS / Windows)
+
+平台差异一律走构建标签文件(`xxx_unix.go` / `xxx_windows.go`),命令层不写 `if runtime.GOOS`:
+
+- **路径**:`internal/appdir` 是唯一真源 —— POSIX 走 XDG(`~/.config`、`~/.cache`、`~/.local/share`,macOS 也沿用以免迁移丢配置),Windows 走 `%AppData%\submon`(配置/密钥)与 `%LocalAppData%\submon`(缓存/补全)。config / secret / cmd 全部从这里取;**不要再手写 `os.Getenv("XDG_*")`**。
+- **定时任务**:`cmd/schedule.go` 定义 `scheduler` 接口,`schedule_systemd.go`(systemd 用户 timer)与 `schedule_windows.go`(任务计划程序 + UTF-16LE 的 VBS 启动器,避免每 N 分钟闪黑窗)各实现一份。install / check / notify status 只消费接口,新增平台 = 新增一个实现文件。
+- **控制台**:Windows 需要 UTF-8 代码页 + `ENABLE_VIRTUAL_TERMINAL_PROCESSING`(`cmd/console_windows.go`,`prepareConsole` 在 rootCmd 的 PersistentPreRun 里调),终端不能 ANSI 时 `consoleSupportsANSI()` 让 `useColor()` 自动关色。
+- **信号**:`cmd/signal_*.go` 的 `termSignals()`(Windows 只有 Ctrl-C,没有 SIGTERM)。
+- **后台自愈 fork**:`cmd/procattr_*.go` 的 `detachProcAttr()`(Windows 用 `DETACHED_PROCESS`,否则父进程退出会连带杀掉刷新进程)。
+- **缓存锁 / 原子替换**:`internal/cache/lock_unix.go`(flock)与 `lock_windows.go`(LockFileEx);`rename_*.go` 是替换实现 —— Windows 上并发读会挡住 MoveFileEx(Go 打开文件不带 FILE_SHARE_DELETE),需要退避重试。
+- PowerShell 调用统一走 `cmd/powershell.go`(强制 UTF-8 输出,解析属性名而不是本地化的文本)。
+
 ## 约定
 
+- 用户可见文案里的路径不许写死 `~/.config/submon`(Windows 上指错地方),用 `cmd/pathhint.go` 的 `configPathHint()` / `cachePathHint()` / `secretKeyHint()`。
 - 状态栏/终端输出:**禁用 dim 灰色**(可读性),辅助信息用 `ansiWhite`(默认前景色 `\033[0;39m`),彩色只留给语义信息(百分比阈值变色绿/黄/红)。
 - statusline 排版有 a/b/c 三套(`statusline.layout` 配置,`SUBMON_LAYOUT` 环境变量可临时切换预览),默认 a;改格式时三套都要对齐。
 - 新增 config 字段要同时改:`Config` 结构体 toml tag、`Default()`、`Load()` 的兜底逻辑,以及 `submon config` 的合并迁移逻辑(保持"不丢现有配置"承诺)。

@@ -17,10 +17,8 @@ import (
 func withConfigPath(t *testing.T, fn func()) {
 	t.Helper()
 	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(dir, "cache"))
-	t.Setenv("HOME", dir) // macOS / 不识别 XDG 的平台兜底
-	// config.Load() 在没有 toml 时返回 default,CachePath 走 XDG_CACHE_HOME。
+	isolateAppDirs(t, dir)
+	// config.Load() 在没有 toml 时返回 default,CachePath 走平台缓存目录。
 	_ = os.MkdirAll(filepath.Join(dir, "cache"), 0o755)
 	fn()
 }

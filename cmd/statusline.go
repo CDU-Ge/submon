@@ -871,8 +871,11 @@ func maybeSelfHeal(cachePath string, entry *cache.Entry, cfg *config.Config, now
 	cmd := exec.Command(exe, "watch", "--quiet")
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
+	cmd.SysProcAttr = detachProcAttr()
 	_ = cmd.Start()
-	// 父进程(statusline)立即退出,孤儿进程由 init 收养,刷新完写缓存后退出。
+	// 父进程(statusline)立即退出;子进程按平台规则脱离父进程
+	// (POSIX 由 init 收养,Windows 不挂控制台,见 procattr_*.go),
+	// 刷新完写缓存后自行退出。
 }
 
 // badgeText is the plain (uncolored) provider label.

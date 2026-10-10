@@ -7,9 +7,17 @@ import (
 	"testing"
 )
 
+// useConfigDir 把配置目录重定向到 dir:POSIX 走 XDG_CONFIG_HOME,Windows 走
+// %AppData%(os.UserConfigDir 在 Windows 上读的就是后者)。
+func useConfigDir(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("AppData", dir)
+}
+
 func TestEncryptDecryptRoundtrip(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
+	useConfigDir(t, dir)
 
 	pt := "sk-my-plain-token-123"
 	enc, err := Encrypt(pt)
@@ -43,7 +51,7 @@ func TestEncryptDecryptRoundtrip(t *testing.T) {
 
 func TestDecryptPassesPlaintextThrough(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
+	useConfigDir(t, dir)
 	got, err := Decrypt("not-encrypted")
 	if err != nil || got != "not-encrypted" {
 		t.Fatalf("plaintext passthrough: %q %v", got, err)
@@ -52,7 +60,7 @@ func TestDecryptPassesPlaintextThrough(t *testing.T) {
 
 func TestDecryptFailsWithWrongKey(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
+	useConfigDir(t, dir)
 
 	enc, err := Encrypt("secret")
 	if err != nil {
@@ -68,7 +76,7 @@ func TestDecryptFailsWithWrongKey(t *testing.T) {
 
 func TestEmptyEncrypt(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
+	useConfigDir(t, dir)
 	out, err := Encrypt("")
 	if err != nil || out != "" {
 		t.Fatalf("empty encrypt: %q %v", out, err)

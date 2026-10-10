@@ -31,11 +31,10 @@ var installClaudeCmd = &cobra.Command{
 			return err
 		}
 
-		home, err := os.UserHomeDir()
+		path, err := claudeSettingsPath()
 		if err != nil {
 			return err
 		}
-		path := filepath.Join(home, ".claude", "settings.json")
 
 		// 合并:读现有 JSON(任意未知字段原样保留),只动 statusLine。
 		settings := map[string]any{}

@@ -118,7 +118,7 @@ func runLoginDiscover(cmd *cobra.Command) error {
 // readDiscoverLine 与 readAuthField 的 bufio 复用语义相同 — 走 fd 单字节
 // 读,避免 term/bufio 抢 fd。管道时透明。
 func readDiscoverLine() (string, error) {
-	return readLineFromFD(int(os.Stdin.Fd()))
+	return readLineRaw(os.Stdin)
 }
 
 // mustConfigPath 仅用于输出提示,出错回落到 "config.toml"。

@@ -1,5 +1,6 @@
-// Package config loads submon configuration from ~/.config/submon/config.toml
-// with environment-variable overrides.
+// Package config loads submon configuration from the platform config dir
+// (POSIX ~/.config/submon/config.toml, Windows %AppData%\submon\config.toml;
+// see internal/appdir) with environment-variable overrides.
 package config
 
 import (
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/ge/subscription-monitor/internal/appdir"
 	"github.com/ge/subscription-monitor/internal/model"
 	"github.com/ge/subscription-monitor/internal/secret"
 )
@@ -40,7 +42,8 @@ type Config struct {
 		// TTLSeconds is how long a fetched snapshot is served from cache.
 		// Default 300 (5 min).
 		TTLSeconds int `toml:"ttl_seconds"`
-		// Path defaults to ~/.cache/submon/cache.json.
+		// Path defaults to the platform cache dir (POSIX
+		// ~/.cache/submon/cache.json, Windows %LocalAppData%\submon\cache.json).
 		Path string `toml:"path"`
 	} `toml:"cache"`
 	Notify struct {
@@ -94,16 +97,10 @@ func (c *Config) RemindBeforeDuration() time.Duration {
 	return d
 }
 
-// Dir returns the config directory (~/.config/submon).
+// Dir returns the config directory(~/.config/submon;Windows 下是
+// %AppData%\submon)。解析规则统一在 internal/appdir。
 func Dir() (string, error) {
-	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
-		return filepath.Join(v, "submon"), nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".config", "submon"), nil
+	return appdir.Config()
 }
 
 // Load reads config.toml if present and applies env overrides. A missing file
@@ -158,19 +155,17 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-// CachePath resolves the cache file location.
+// CachePath resolves the cache file location(默认 ~/.cache/submon/cache.json;
+// Windows 下是 %LocalAppData%\submon\cache.json)。
 func (c *Config) CachePath() (string, error) {
 	if c.Cache.Path != "" {
 		return c.Cache.Path, nil
 	}
-	if v := os.Getenv("XDG_CACHE_HOME"); v != "" {
-		return filepath.Join(v, "submon", "cache.json"), nil
-	}
-	home, err := os.UserHomeDir()
+	dir, err := appdir.Cache()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".cache", "submon", "cache.json"), nil
+	return filepath.Join(dir, "cache.json"), nil
 }
 
 // Path returns the config file location.

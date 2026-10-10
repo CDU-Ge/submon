@@ -14,13 +14,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// configCmd 生成/更新 ~/.config/submon/config.toml:把用户现有文件解码进
+// configCmd 生成/更新 config.toml:把用户现有文件解码进
 // 结构体(缺失字段填默认值)再重新编码。用户设过的字段保留;schema 新增的
 // 字段以默认值或迁移值出现。
 var configCmd = &cobra.Command{
 	Use:   "config",
 	Short: "生成/更新 config.toml",
-	Long: "按当前配置标准合并生成 ~/.config/submon/config.toml:\n" +
+	Long: "按当前配置标准合并生成 " + configPathHint() + ":\n" +
 		"已有配置保留,缺失字段补默认值,~/.minimax-config.json 中的 token\n" +
 		"会迁移并加密;明文 token 也会转为加密。默认只显示差异,--write 写入。",
 	Example: "  submon config            # 预览与现有文件的差异,不写入\n" +

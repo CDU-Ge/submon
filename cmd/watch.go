@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/ge/subscription-monitor/internal/cache"
@@ -20,8 +19,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// watch is a one-shot job meant to be launched by a systemd user timer every
-// few minutes: force-refresh every configured provider, update the cache
+// watch is a one-shot job meant to be launched by the platform scheduler
+// (systemd user timer / Windows 任务计划程序,见 `submon install`) every few
+// minutes: force-refresh every configured provider, update the cache
 // (which also feeds statusline), run the alert state machine and push Gotify
 // notifications on level *transitions* only, then exit.
 var watchCmd = &cobra.Command{
@@ -29,10 +29,9 @@ var watchCmd = &cobra.Command{
 	Short: "刷新配额缓存并评估催用提醒",
 	Long: "刷新全部 provider、更新共享缓存;窗口即将重置且剩余额度较多时\n" +
 		"推送催用提醒。设计为每次 timer 触发运行一次。",
-	Example: "  submon watch                  # 正常模式(供 systemd timer)\n" +
+	Example: "  submon watch                  # 正常模式(供定时任务)\n" +
 		"  submon watch --quiet          # 静默模式(statusline 自愈 fork 用)\n" +
-		"  systemctl --user enable --now submon-watch.timer  # 接入定时器\n" +
-		"  submon install                # 一键生成 + 启用上面的 timer",
+		"  submon install                # 一键注册定时任务(systemd timer / 任务计划程序)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if watchQuiet {
 			// 静默模式(statusline 自愈 fork):日志全部丢弃。
@@ -54,15 +53,16 @@ var watchCmd = &cobra.Command{
 
 		gURL, gToken := cfg.GotifyCredential()
 		g := &notify.Gotify{URL: gURL, AppToken: gToken}
-		// SIGINT / SIGTERM:第一次按 = 取消 in-flight HTTP,清干净退出;
+		// Ctrl-C / SIGTERM(termSignals,Windows 只有 Ctrl-C):第一次按 =
+		// 取消 in-flight HTTP,清干净退出;
 		// 第二次按 = 立即放弃,不写缓存。两段 ctx:用户取消 + 60s 总预算,
 		// 任何一个先到都让所有 provider Fetch 收到 Done 信号。
-		ctx, stopSig := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		ctx, stopSig := signal.NotifyContext(context.Background(), termSignals()...)
 		defer stopSig()
 		ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		defer cancel()
 		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+		signal.Notify(sigCh, termSignals()...)
 		go func() {
 			<-sigCh
 			if !watchQuiet {
@@ -100,7 +100,7 @@ var watchCmd = &cobra.Command{
 		}
 		if len(failed) > 0 {
 			// 汇总到 stderr 让人眼能扫到每条具体 provider 失败原因,
-			// 再用一个简洁的 error 让 systemd timer / shell 拿到非零退出码。
+			// 再用一个简洁的 error 让定时任务 / shell 拿到非零退出码。
 			for _, line := range failed {
 				fmt.Fprintln(cmd.ErrOrStderr(), "✗", line)
 			}

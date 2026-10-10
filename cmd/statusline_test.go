@@ -373,7 +373,7 @@ func TestQuotaSegmentForProviderMultiKey(t *testing.T) {
 
 	// 直接写 cache。
 	dir := t.TempDir()
-	t.Setenv("XDG_CACHE_HOME", dir)
+	isolateAppDirs(t, dir)
 	cp, _ := cfg.CachePath()
 	store := cache.New(cp)
 	f := &cache.File{Entries: map[string]*cache.Entry{}}
@@ -428,7 +428,7 @@ func TestQuotaSegmentForProviderSingleKeyNoLabel(t *testing.T) {
 	cfg.Accounts = []config.Account{{Provider: "kimi", Label: "default", Token: "tk-only"}}
 
 	dir := t.TempDir()
-	t.Setenv("XDG_CACHE_HOME", dir)
+	isolateAppDirs(t, dir)
 	cp, _ := cfg.CachePath()
 	store := cache.New(cp)
 	f := &cache.File{Entries: map[string]*cache.Entry{}}

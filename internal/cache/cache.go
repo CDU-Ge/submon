@@ -1,18 +1,18 @@
 // Package cache persists provider snapshots and watch state in a single JSON
-// file. Writers (status --force, watch) use an exclusive flock plus atomic
-// rename; readers (statusline) take a shared lock so they never see a
-// half-written file.
+// file. Writers (status --force, watch) take an exclusive lock on <path>.lock
+// plus do an atomic rename, so concurrent refreshes serialize and readers
+// (statusline) never see a half-written file. The lock itself is
+// platform-specific: flock(2) on POSIX, LockFileEx on Windows
+// (lock_unix.go / lock_windows.go).
 package cache
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/ge/subscription-monitor/internal/model"
-	"golang.org/x/sys/unix"
 )
 
 // AlertState is watch's threshold state machine memory, persisted per provider.
@@ -123,7 +123,8 @@ func (s *Store) Load() (*File, error) {
 }
 
 // Save atomically writes the file under an exclusive lock: write temp file in
-// the same directory, then rename over the target.
+// the same directory, then replace the target (platform semantics differ — see
+// replaceFile in rename_unix.go / rename_windows.go).
 func (s *Store) Save(f *File) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return err
@@ -151,7 +152,7 @@ func (s *Store) Save(f *File) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpName, s.path); err != nil {
+	if err := replaceFile(tmpName, s.path); err != nil {
 		return err
 	}
 	return nil
@@ -193,20 +194,4 @@ func (e *Entry) Fresh(ttl time.Duration) bool {
 		return false
 	}
 	return time.Since(e.FetchedAt) < ttl
-}
-
-// lockFile opens/creates <path>.lock and takes an exclusive flock.
-func lockFile(path string) (*os.File, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, err
-	}
-	f, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		return nil, err
-	}
-	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("flock %s: %w", path+".lock", err)
-	}
-	return f, nil
 }

@@ -182,11 +182,19 @@ func TestRemoveAccount(t *testing.T) {
 
 // --- 迁移测试 ---
 
-// writeConfig 把 raw 写到 XDG_CONFIG_HOME 下的 config.toml,返回 Load 结果。
+// useConfigDir 把配置目录重定向到 dir:POSIX 走 XDG_CONFIG_HOME,Windows 走
+// %AppData% —— 只设一个平台的话,另一个平台跑测试会写到真实配置目录。
+func useConfigDir(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("AppData", dir)
+}
+
+// writeConfig 把 raw 写到配置目录下的 config.toml,返回 Load 结果。
 func writeConfig(t *testing.T, raw string) *Config {
 	t.Helper()
 	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
+	useConfigDir(t, dir)
 	if err := os.MkdirAll(filepath.Join(dir, "submon"), 0o700); err != nil {
 		t.Fatal(err)
 	}

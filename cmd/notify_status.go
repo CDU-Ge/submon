@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -98,20 +97,18 @@ var notifyStatusCmd = &cobra.Command{
 			fmt.Fprintln(out, "(暂无数据,先运行 submon status --force)")
 		}
 
-		// systemd timer 下次触发时间。
+		// 定时任务的下次触发时间(平台实现见 schedule_*.go)。
 		fmt.Fprintln(out)
-		if raw, err := exec.Command("systemctl", "--user", "list-timers", unitName+".timer", "--no-pager", "--no-legend").Output(); err == nil {
-			for _, line := range strings.Split(string(raw), "\n") {
-				fields := strings.Fields(line)
-				// NEXT LEFT LAST PASSED UNIT ACTIVATES → 下次时间为第三个字段后…
-				// 格式含日期+时间,取 "NEXT" 列(前两个字段:日期 时间)。
-				if len(fields) >= 3 && strings.Contains(line, unitName) && fields[0] != "-" {
-					fmt.Fprintf(out, "下次评估: %s %s %s(由 %s.timer 触发)\n", fields[0], fields[1], fields[2], unitName)
-					return nil
-				}
-			}
+		sched := newScheduler()
+		st := sched.Status()
+		switch {
+		case st.NextRun != "":
+			fmt.Fprintf(out, "下次评估: %s(由 %s 触发)\n", st.NextRun, sched.Name())
+		case st.Ready:
+			fmt.Fprintf(out, "下次评估: 未知(%s 未给出时间)\n", sched.Name())
+		default:
+			fmt.Fprintln(out, "下次评估: 未知(定时任务未启用?运行 submon install)")
 		}
-		fmt.Fprintln(out, "下次评估: 未知(timer 未启用?运行 submon install)")
 		return nil
 	},
 }

@@ -63,7 +63,7 @@ var cacheListJSON bool
 var cacheCmd = &cobra.Command{
 	Use:   "cache",
 	Short: "查看或清空快照缓存",
-	Long: "submon 的快照缓存(~/.cache/submon/cache.json)为 statusline 提供\n" +
+	Long: "submon 的快照缓存(" + cachePathHint() + ")为 statusline 提供\n" +
 		"零成本读访问,watch 定时器负责写入:\n\n" +
 		"  submon cache             列出全部 provider 的缓存条目\n" +
 		"  submon cache clear       删除缓存文件(要求 y/N 确认)\n" +

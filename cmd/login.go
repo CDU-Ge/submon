@@ -8,7 +8,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/ge/subscription-monitor/internal/config"
 	"github.com/ge/subscription-monitor/internal/secret"
@@ -176,7 +175,7 @@ func runLoginAdd(cmd *cobra.Command) error {
 		if f.Secret && values[f.Key] != "" && !secret.IsEncrypted(values[f.Key]) {
 			enc, err := secret.Encrypt(values[f.Key])
 			if err != nil {
-				return fmt.Errorf("加密 %s 失败: %w\n  常见原因: 无法写入 ~/.config/submon/secret.key(检查权限)", f.Key, err)
+				return fmt.Errorf("加密 %s 失败: %w\n  常见原因: 无法写入 %s(检查权限)", f.Key, err, secretKeyHint())
 			}
 			values[f.Key] = enc
 		}
@@ -251,7 +250,7 @@ func promptLoginLabel(br *bufio.Reader, useTerm bool) (string, error) {
 // bufio.Reader(每次 NewReader 预读会让下个字段 EOF)。
 func readLoginLine(br *bufio.Reader, useTerm bool) (string, error) {
 	if useTerm {
-		return readLineFromFD(int(os.Stdin.Fd()))
+		return readLineRaw(os.Stdin)
 	}
 	line, err := br.ReadString('\n')
 	if errors.Is(err, io.EOF) {
@@ -267,7 +266,7 @@ func readLoginLine(br *bufio.Reader, useTerm bool) (string, error) {
 // readLoginField 按字段属性选择输入方式:
 //
 //	Secret + TTY → term.ReadPassword(无回显) 直读 os.Stdin
-//	非 Secret + TTY → readLineFromFD(单字节读,不预读 buffer)
+//	非 Secret + TTY → readLineRaw(单字节读,不预读 buffer)
 //	管道输入 → br.ReadString (调用方必须复用同一个,见 runLoginAdd 注释)
 func readLoginField(f loginField, br *bufio.Reader, useTerm bool) (string, error) {
 	if f.Secret && useTerm {
@@ -281,7 +280,7 @@ func readLoginField(f loginField, br *bufio.Reader, useTerm bool) (string, error
 	}
 	fmt.Fprintf(os.Stderr, "%s: ", f.Prompt)
 	if useTerm {
-		return readLineFromFD(int(os.Stdin.Fd()))
+		return readLineRaw(os.Stdin)
 	}
 	line, err := br.ReadString('\n')
 	if errors.Is(err, io.EOF) {
@@ -293,13 +292,15 @@ func readLoginField(f loginField, br *bufio.Reader, useTerm bool) (string, error
 	return strings.TrimSpace(line), nil
 }
 
-// readLineFromFD 从 fd 单字节读直到 \n — 不经过 bufio,杜绝与 term.ReadPassword
-// 在同一 fd 上抢 buffer。仅 TTY 模式使用。
-func readLineFromFD(fd int) (string, error) {
+// readLineRaw 从 f 单字节读直到 \n — 不经过 bufio,杜绝与 term.ReadPassword
+// 在同一 fd 上抢 buffer。仅 TTY 模式使用(调用方传 os.Stdin)。
+// 用 *os.File 而不是裸 fd:os.File.Read 本身无缓冲,syscall.Read 在各平台
+// 的 fd 类型不同(Windows 是 HANDLE),包一层才能跨平台。
+func readLineRaw(f *os.File) (string, error) {
 	var buf []byte
 	one := make([]byte, 1)
 	for {
-		n, err := syscall.Read(fd, one)
+		n, err := f.Read(one)
 		if n > 0 {
 			if one[0] == '\n' {
 				return strings.TrimRight(string(buf), "\r"), nil
@@ -399,7 +400,7 @@ func pickLoginAccount(cmd *cobra.Command) (string, string, error) {
 		fmt.Fprintf(cmd.ErrOrStderr(), "  %d) %s/%s\n", i+1, a.Provider, a.Label)
 	}
 	fmt.Fprint(cmd.ErrOrStderr(), "要删除哪个账号?序号或 provider/label: ")
-	line, err := readLineFromFD(int(os.Stdin.Fd()))
+	line, err := readLineRaw(os.Stdin)
 	if err != nil {
 		return "", "", err
 	}
@@ -435,7 +436,7 @@ func removeWithConfirm(cmd *cobra.Command, name, label string) error {
 			return fmt.Errorf("非交互式环境拒绝执行删除(避免脚本误删):\n  强制删除: submon login remove %s %s -f", name, label)
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(), "将删除 %s/%s 已存凭据(删除后需重新获取并配置)。确认? [y/N]: ", name, label)
-		line, err := readLineFromFD(int(os.Stdin.Fd()))
+		line, err := readLineRaw(os.Stdin)
 		if err != nil {
 			return err
 		}

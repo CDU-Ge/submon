@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -18,7 +17,7 @@ import (
 )
 
 // checkCmd 全面体检:配置文件、各 provider 凭据、加密密钥、缓存、
-// 通知配置、systemd timer。逐项输出 ✓/✗/⚠,最后给汇总。
+// 通知配置、定时任务。逐项输出 ✓/✗/⚠,最后给汇总。
 var checkCmd = &cobra.Command{
 	Use:   "check",
 	Short: "检查配置、凭据、缓存与通知链路",
@@ -27,7 +26,7 @@ var checkCmd = &cobra.Command{
 		"  2. 各 provider 凭据(含加密存储形态)\n" +
 		"  3. 缓存状态与数据年龄\n" +
 		"  4. 通知配置与告警状态机\n" +
-		"  5. systemd timer 运行状态\n" +
+		"  5. 定时任务(systemd timer / 任务计划程序)运行状态\n" +
 		"全部通过时退出码为 0,否则为 1。",
 	Example: "  submon check             # 全项体检\n" +
 		"  submon check && echo ok  # 流水线里用退出码判断",
@@ -195,22 +194,20 @@ func alertSuffix(e *cache.Entry) string {
 	return ""
 }
 
+// timerState 检查"定时刷新"是否已注册并启用。调度机制按平台不同
+// (systemd timer / 任务计划程序),这里只消费 scheduler 抽象。
 func timerState(out io.Writer, pass func(string, ...any), warn func(string, ...any)) {
-	if _, err := exec.LookPath("systemctl"); err != nil {
-		warn("未找到 systemctl,跳过 timer 检查")
-		return
-	}
-	enabled, err := exec.Command("systemctl", "--user", "is-enabled", unitName+".timer").Output()
-	if err != nil || strings.TrimSpace(string(enabled)) != "enabled" {
-		warn("systemd timer 未启用,运行: submon install")
-		return
-	}
-	pass("timer 已启用(%s)", strings.TrimSpace(string(enabled)))
-	if next, err := exec.Command("systemctl", "--user", "list-timers", unitName+".timer", "--no-pager").Output(); err == nil {
-		for _, line := range strings.Split(string(next), "\n") {
-			if strings.Contains(line, unitName) {
-				fmt.Fprintln(out, "  ℹ", strings.Join(strings.Fields(line), " "))
-			}
+	sched := newScheduler()
+	st := sched.Status()
+	switch {
+	case st.Missing:
+		warn("未找到 %s,跳过定时任务检查", sched.Name())
+	case !st.Ready:
+		warn("%s 未启用(%s),运行: submon install", sched.Name(), st.Note)
+	default:
+		pass("%s 已启用(%s)", sched.Name(), st.Note)
+		if st.NextRun != "" {
+			fmt.Fprintln(out, "  ℹ 下次触发:", st.NextRun)
 		}
 	}
 }

@@ -5,13 +5,46 @@ Monitors coding-plan quotas for **Zhipu** (open.bigmodel.cn / api.z.ai),
 high-frequency consumers (terminal statuslines) never hammer the APIs, plus
 Gotify push alerts on threshold crossings.
 
-Single Go binary, built with cobra.
+Single Go binary, built with cobra. Runs on Linux, macOS and Windows.
 
 ## Install
 
 ```sh
-go build -o ~/.local/bin/submon .
+go build -o ~/.local/bin/submon .          # POSIX
+go build -o submon.exe .                   # Windows (PowerShell / cmd)
 ```
+
+Then wire it up: `submon login` (credentials) and `submon install` (periodic
+refresh + Claude Code statusline).
+
+## Windows
+
+Same binary, same commands — only the plumbing differs:
+
+| Concern | Where it lives on Windows |
+| --- | --- |
+| config.toml, secret.key | `%AppData%\submon\` (roams with the user profile) |
+| cache.json, completions | `%LocalAppData%\submon\` (machine-local) |
+| Claude Code settings | `%USERPROFILE%\.claude\settings.json` |
+| periodic refresh | Task Scheduler task `submon-watch` (see `submon install`) |
+| shell completion | PowerShell: `submon completion-install --shell powershell` |
+
+```powershell
+submon login                     # credentials (encrypted at rest)
+submon install                   # Task Scheduler task + Claude Code statusline
+submon status                    # quota panel
+submon check                     # diagnose config / cache / task / Gotify
+```
+
+Notes:
+
+- `submon install` registers the task via `schtasks`, running a generated VBS
+  launcher (`%AppData%\submon\submon-watch.vbs`) so no console window flashes
+  every interval. `--interval` must be whole minutes (1–1439).
+- Console output is UTF-8 with ANSI color enabled (`SetConsoleOutputCP(65001)` +
+  `ENABLE_VIRTUAL_TERMINAL_PROCESSING`); colors are turned off automatically if
+  the console cannot do ANSI.
+- `submon install --uninstall` deletes the task and the launcher.
 
 ## Commands
 
@@ -92,19 +125,20 @@ API fetch skips evaluation entirely (no false "recovered").
 
 ### `submon install`
 
-Install and enable the systemd user units that run `submon watch` on a
-schedule — one command instead of hand-copying unit files:
+Install and enable the periodic `submon watch` job — a systemd user service +
+timer on POSIX, a Task Scheduler task on Windows — and register the Claude Code
+statusline, in one command:
 
 ```sh
-submon install                # write units + enable timer (5m default)
+submon install                # register the schedule + wire the statusline (5m default)
 submon install --interval 15m # custom interval
-submon install --print        # preview generated units
+submon install --print        # preview what would be written
 submon install --uninstall    # stop, disable and remove
 ```
 
-Credentials are never baked into unit files — use `submon login` or
-`~/.config/environment.d/`. On machines without a systemd user session the
-units are still written, with the manual enable command printed.
+Credentials are never baked into the generated units — use `submon login`, or
+`~/.config/environment.d/` on systemd hosts. On machines without a systemd user
+session the units are still written, with the manual enable command printed.
 
 ### `submon config`
 
@@ -169,7 +203,8 @@ echo "enc:v1:..." | submon enc -d
 
 ## Configuration
 
-`~/.config/submon/config.toml` — see [`submon.example.toml`](submon.example.toml).
+`~/.config/submon/config.toml` (Windows: `%AppData%\submon\config.toml`) — see
+[`submon.example.toml`](submon.example.toml).
 Credentials live in `[[accounts]]` (`provider` / `label` / `token` /
 `base_url`); environment variables still win for the default account:
 
@@ -184,10 +219,10 @@ Credentials live in `[[accounts]]` (`provider` / `label` / `token` /
 ## Build
 
 ```sh
-make build      # → ./submon (version info injected)
-make install    # → ~/.local/bin/submon
+make build      # → ./submon (version info injected; .exe on Windows)
+make install    # → ~/.local/bin/submon (POSIX)
 make test       # unit tests
-make release    # cross-compile linux/amd64, darwin/amd64, darwin/arm64 into dist/
+make release    # cross-compile linux/amd64, darwin/{amd64,arm64}, windows/amd64 into dist/
 ```
 
 ## Notes on API semantics
