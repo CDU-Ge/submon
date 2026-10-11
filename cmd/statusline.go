@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"os"
 	"os/exec"
@@ -33,10 +34,18 @@ import (
 // user watches every frame (context tokens), right = volatile (effort, fast,
 // rate-limit windows). Symbols are kept to a minimum: only ⎇ (git convention)
 // and * (dirty marker) survive.
+// contextWindowInfo 是 Claude Code stdin 里的 context_window 对象。官方语义
+// (docs/statusline.md「Context window fields」)决定了下面的取值优先级:
+//   - used_percentage 是 Claude Code 自己算好的已用%,与 /context 同源 —— 首选;
+//   - total_input_tokens 在首次 API 响应之前、以及 /compact 之后到下一次响应
+//     之间都是 0 —— 那是"这一帧没有数据",不是"用量真的是 0"。
+//
+// 数值一律 float64:文档写的是整数,但小数(8.5)也解析得动,免得一个类型
+// 不匹配就把整段上下文吞掉。
 type contextWindowInfo struct {
-	TotalInputTokens  *int64 `json:"total_input_tokens"`
-	ContextWindowSize *int64 `json:"context_window_size"`
-	UsedPercentage    *int64 `json:"used_percentage"`
+	TotalInputTokens  *float64 `json:"total_input_tokens"`
+	ContextWindowSize *float64 `json:"context_window_size"`
+	UsedPercentage    *float64 `json:"used_percentage"`
 }
 
 // rateLimitWindow 是 Claude Code stdin 里的官方订阅限额窗口。
@@ -46,6 +55,9 @@ type rateLimitWindow struct {
 }
 
 type statuslineInput struct {
+	// SessionID 会话内稳定、跨会话唯一 —— 上下文快照的缓存键(官方文档
+	// 在"缓存慢操作"一节同样推荐用它做状态栏缓存键)。
+	SessionID string `json:"session_id"`
 	Workspace struct {
 		CurrentDir string `json:"current_dir"`
 	} `json:"workspace"`
@@ -155,10 +167,12 @@ var statuslineCmd = &cobra.Command{
 		}
 
 		// Read Claude Code's JSON payload from stdin; absent fields degrade.
+		// 绝不阻塞:见 readStdinWithin —— 卡在 stdin 上等于状态栏一行都不出。
 		var in statuslineInput
-		raw, _ := io.ReadAll(os.Stdin)
-		if len(raw) > 0 {
-			_ = json.Unmarshal(raw, &in)
+		if !stdinIsTerminal() {
+			if raw := readStdinWithin(os.Stdin, statuslineStdinBudget); len(raw) > 0 {
+				_ = json.Unmarshal(raw, &in)
+			}
 		}
 
 		out := cmd.OutOrStdout()
@@ -174,19 +188,72 @@ func isOfficialClaude() bool {
 	return base == "" || strings.Contains(base, "anthropic.com")
 }
 
+// statuslineStdinBudget 是读 stdin 的软期限(上限,不是固定等待)。
+const statuslineStdinBudget = 200 * time.Millisecond
+
+// stdinIsTerminal:手敲 `submon statusline`(stdin 是终端,永远不会有
+// EOF)时直接不用等 —— 交互式运行必须立刻出结果。
+func stdinIsTerminal() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
+// readStdinWithin 读 stdin,但**绝不无限期等待**:到点就返回已读到的字节
+// (可能为空),让渲染继续。
+//
+// 为什么不能直接 io.ReadAll:Claude Code 把 JSON 写进管道后不一定关掉它,
+// 而 ReadAll 要读到 EOF 才返回 —— 进程就那么挂着,直到被 Claude Code 的
+// 超时杀掉,用户看到的就是"状态栏一行都不出"。反过来,只要把已读到的字节
+// 交给上层,即使管道一直开着,payload 也是完整的。
+func readStdinWithin(r io.Reader, budget time.Duration) []byte {
+	type chunk struct {
+		data []byte
+		err  error
+	}
+	ch := make(chan chunk, 1)
+	go func() {
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := r.Read(buf)
+			if n > 0 {
+				ch <- chunk{data: append([]byte(nil), buf[:n]...)}
+			}
+			if err != nil {
+				ch <- chunk{err: err}
+				return
+			}
+		}
+	}()
+
+	var out []byte
+	deadline := time.After(budget)
+	for {
+		select {
+		case c := <-ch:
+			out = append(out, c.data...)
+			// payload 自洽就立刻收工:CC 写完 JSON 不一定关管道,继续等到期限
+			// 等于每帧白等 200ms;而 CC 会取消"还在跑"的状态栏脚本(官方:
+			// 新更新触发时 in-flight 脚本被取消),那一帧整行空白 —— 也是跳闪。
+			// json.Valid 对半截 payload 返回 false,继续攒下一块。
+			if c.err != nil || json.Valid(out) {
+				return out // EOF / 出错,或 payload 已完整
+			}
+		case <-deadline:
+			// 只剩这个 goroutine 挂在读上;进程随即退出,不回收也无害。
+			return out
+		}
+	}
+}
+
 // contextPlainSegment: layout B 的上下文段 "ctx 已用 15%"。
-func contextPlainSegment(cw contextWindowInfo) string {
-	if cw.TotalInputTokens == nil || cw.ContextWindowSize == nil || *cw.ContextWindowSize <= 0 {
+func contextPlainSegment(in *statuslineInput, cfg *config.Config, now time.Time) string {
+	pct, _, ok := ctxUsage(in, cfg, now)
+	if !ok {
 		return ""
 	}
-	effective := *cw.ContextWindowSize
-	if v := envInt64("CLAUDE_CODE_MAX_CONTEXT_TOKENS"); v > 0 && v < effective {
-		effective = v
-	}
-	if v := envInt64("CLAUDE_CODE_AUTO_COMPACT_WINDOW"); v > 0 && v < effective {
-		effective = v
-	}
-	pct := float64(*cw.TotalInputTokens) / float64(effective) * 100
 	return fmt.Sprintf("ctx %s已用 %.0f%%%s", ansiGreen, pct, ansiReset)
 }
 
@@ -358,11 +425,15 @@ func freshTrailer(cfg *config.Config, now time.Time) string {
 func renderStatusline(in *statuslineInput, cfg *config.Config, now time.Time) string {
 	modelName := stripANSI(in.Model.Display)
 
+	// 目录段只认 Claude Code 给的会话目录(workspace.current_dir / cwd)。
+	// 以前这里在缺失时退回 os.Getwd() —— 那是进程的偶然工作目录,不是会话
+	// 目录:在 exe 所在目录手动跑一次就会显示 "Tools" 这种凭空出现的段,
+	// 既误导用户,又白 spawn 一次 git。没有就不显示目录/分支段。
 	cwd := in.Workspace.CurrentDir
-	if cwd == "" {
-		cwd, _ = os.Getwd()
+	dir := ""
+	if cwd != "" {
+		dir = filepath.Base(cwd)
 	}
-	dir := filepath.Base(cwd)
 
 	layout := cfg.Statusline.Layout
 	if layout != "c" && termColumns() < 100 {
@@ -403,7 +474,7 @@ func renderLayoutA(in *statuslineInput, cfg *config.Config, modelName, dir, cwd 
 	// 1. 左:目录 + 分支(纯文本,无 ⎇;颜色区分 dir/branch)。
 	if dir != "" {
 		seg := ansiCyan + dir + ansiReset
-		if branch, dirty := gitInlineSegment(cwd); branch != "" {
+		if branch, dirty := gitInlineSegment(cfg, cwd, now); branch != "" {
 			seg += " " + ansiMagenta + branch + ansiReset
 			if dirty {
 				seg += ansiYellow + "*" + ansiReset
@@ -434,7 +505,7 @@ func renderLayoutA(in *statuslineInput, cfg *config.Config, modelName, dir, cwd 
 	}
 
 	// 4. 中部锚点:token 使用进度(max + bar + %)。
-	if ctx := contextSegment(in.ContextWindow); ctx != "" {
+	if ctx := contextSegment(in, cfg, now); ctx != "" {
 		segs = append(segs, ctx)
 	}
 
@@ -531,13 +602,15 @@ func renderLayoutB(in *statuslineInput, cfg *config.Config, modelName, dir, cwd 
 	if modelName != "" {
 		segs = append(segs, ansiCyan+modelName+ansiReset)
 	}
-	if ctx := contextPlainSegment(in.ContextWindow); ctx != "" {
+	if ctx := contextPlainSegment(in, cfg, now); ctx != "" {
 		segs = append(segs, ctx)
 	}
-	segs = append(segs, ansiYellow+dir+ansiReset)
-	if branch, err := gitBranch(cwd); err == nil && branch != "" {
+	if dir != "" {
+		segs = append(segs, ansiYellow+dir+ansiReset)
+	}
+	if branch, dirty := gitStatusCached(cfg, cwd, now); branch != "" {
 		dirtyMark := ""
-		if d, err := gitDirty(cwd); err == nil && d {
+		if dirty {
 			dirtyMark = ansiRed + "*" + ansiReset
 		}
 		segs = append(segs, ansiWhite+"⎇"+ansiReset+ansiMagenta+branch+dirtyMark+ansiReset)
@@ -556,23 +629,15 @@ func renderLayoutB(in *statuslineInput, cfg *config.Config, modelName, dir, cwd 
 // dir main · 15% · 72%/74% (↻2m)
 func renderLayoutC(in *statuslineInput, cfg *config.Config, modelName, dir, cwd string, now time.Time) string {
 	var segs []string
-	segs = append(segs, ansiCyan+dir+ansiReset)
-	if branch, err := gitBranch(cwd); err == nil && branch != "" {
+	if dir != "" {
+		segs = append(segs, ansiCyan+dir+ansiReset)
+	}
+	if branch, _ := gitStatusCached(cfg, cwd, now); branch != "" {
 		segs = append(segs, ansiWhite+branch+ansiReset)
 	}
-	// 上下文%:用量越高越红(与配额剩余色互补,阈值共用)。
-	if in.ContextWindow.UsedPercentage != nil {
-		used := float64(*in.ContextWindow.UsedPercentage)
-		segs = append(segs, fmt.Sprintf("%s%.0f%%%s", ctxUsedColor(used), used, ansiReset))
-	} else if in.ContextWindow.TotalInputTokens != nil && in.ContextWindow.ContextWindowSize != nil && *in.ContextWindow.ContextWindowSize > 0 {
-		effective := *in.ContextWindow.ContextWindowSize
-		if v := envInt64("CLAUDE_CODE_MAX_CONTEXT_TOKENS"); v > 0 && v < effective {
-			effective = v
-		}
-		if v := envInt64("CLAUDE_CODE_AUTO_COMPACT_WINDOW"); v > 0 && v < effective {
-			effective = v
-		}
-		pct := float64(*in.ContextWindow.TotalInputTokens) / float64(effective) * 100
+	// 上下文%:用量越高越红(与配额剩余色互补,阈值共用)。取值走 ctxUsage
+	// 统一入口 —— 三套排版必须同源,否则同一帧在 a/b/c 下数字会不一致。
+	if pct, _, ok := ctxUsage(in, cfg, now); ok {
 		segs = append(segs, fmt.Sprintf("%s%.0f%%%s", ctxUsedColor(pct), pct, ansiReset))
 	}
 	if isOfficialClaude() {
@@ -622,32 +687,155 @@ func ctxUsedColor(used float64) string {
 
 // gitInlineSegment 返回分支名和脏标记。无 ⎇、git:() 等装饰字符
 // —— 全部由 renderLayoutA 用颜色区分。无 ANSI 包装,返回纯文本。
-func gitInlineSegment(cwd string) (branch string, dirty bool) {
-	b, err := gitBranch(cwd)
-	if err != nil || b == "" {
+func gitInlineSegment(cfg *config.Config, cwd string, now time.Time) (branch string, dirty bool) {
+	b, d := gitStatusCached(cfg, cwd, now)
+	if b == "" {
 		return "", false
 	}
-	d, _ := gitDirty(cwd)
 	return b, d
 }
 
-func gitBranch(cwd string) (string, error) {
-	out, err := exec.Command("git", "-C", cwd, "--no-optional-locks", "rev-parse", "--abbrev-ref", "HEAD").Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
+// gitCmd 是渲染路径上唯一的 git 子进程构造入口 —— 统一挂
+// hideWindowProcAttr,Windows 上才不会每次渲染都闪出控制台窗口。
+func gitCmd(args ...string) *exec.Cmd {
+	c := exec.Command("git", args...)
+	c.SysProcAttr = hideWindowProcAttr()
+	return c
 }
 
-func gitDirty(cwd string) (bool, error) {
-	err := exec.Command("git", "-C", cwd, "--no-optional-locks", "diff", "--quiet", "HEAD").Run()
-	if err == nil {
-		return false, nil
+// gitStatus 一次 spawn 同时取分支名与脏标记。原来是 rev-parse + diff
+// 两次 spawn,而 statusline 是高频路径,进程开销远大于解析成本。
+//
+// 脏标记语义与 `git diff --quiet HEAD` 保持一致:只看 HEAD 跟踪的文件,
+// untracked('? ')与 ignored('! ')不算脏 —— 不然构建产物会一直点亮 *。
+// 正因为不看 untracked,这里显式 --untracked-files=no:大仓库里免掉整棵
+// 工作区的 untracked 扫描(官方文档也点名 git status 是状态栏卡顿主因)。
+func gitStatus(cwd string) (branch string, dirty bool, err error) {
+	out, err := gitCmd("-C", cwd, "--no-optional-locks", "status", "--porcelain=v2", "--branch", "--untracked-files=no").Output()
+	if err != nil {
+		return "", false, err
 	}
-	if _, ok := err.(*exec.ExitError); ok {
-		return true, nil // diff exited non-zero → dirty
+	for _, line := range strings.Split(string(out), "\n") {
+		switch {
+		case strings.HasPrefix(line, "# branch.head "):
+			branch = strings.TrimSpace(strings.TrimPrefix(line, "# branch.head "))
+			if branch == "(detached)" {
+				branch = "HEAD" // 与 rev-parse --abbrev-ref 的历史输出对齐
+			}
+		case line == "" || line[0] == '#':
+			// 头部/空行:无信息,跳过。
+		case line[0] == '1' || line[0] == '2' || line[0] == 'u':
+			dirty = true
+		}
 	}
-	return false, err
+	return branch, dirty, nil
+}
+
+// gitStatusTTL / lockStale 是"重活节流"的两个常数。
+const (
+	gitStatusTTL = 5 * time.Second
+	lockStale    = 30 * time.Second
+)
+
+// gitState 是分支段落的磁盘缓存快照。
+type gitState struct {
+	Branch string    `json:"branch"`
+	Dirty  bool      `json:"dirty"`
+	At     time.Time `json:"at"`
+}
+
+// gitStatusCached 是渲染路径读分支/脏标记的唯一入口。缓存键就是 cwd:
+// git 状态本来就按目录算,同一目录跨会话共享缓存只会更省 spawn;反过来,
+// 只按 session_id 建键是错的 —— 会话内换目录(workspace.current_dir 会变)
+// 会拿到上一个目录的结果。
+//
+// 为什么必须缓存:Claude Code 自己是 300ms debounce + 事件驱动(每条助手
+// 消息、token 数变化、模式切换都会触发),一轮活跃会话里状态栏命令会被叫
+// 很多次;而 Windows 上每次 git 要几十毫秒并且要扫工作区。逐帧 spawn 的
+// 结果是多个 git 叠着跑,磁盘被打满、整机卡死(官方文档 Tips 也专门警告
+// 这一条,并给出 5 秒缓存的做法)。所以:
+//   - 结果按 cwd 落盘,TTL 内直接复用;
+//   - 抢不到锁 = 已经有进程在跑 git,那就用旧值 —— 绝不并发 spawn。
+func gitStatusCached(cfg *config.Config, cwd string, now time.Time) (branch string, dirty bool) {
+	if cwd == "" {
+		return "", false // 没有会话目录就没有 git 段,连 spawn 都不做
+	}
+	path := gitCachePath(cfg, cwd)
+	if path == "" {
+		// 拿不到缓存目录(极罕见):只做一次直连,不额外放大。
+		b, d, err := gitStatus(cwd)
+		if err != nil {
+			return "", false
+		}
+		return b, d
+	}
+	if st, ok := loadGitState(path); ok && now.Sub(st.At) < gitStatusTTL {
+		return st.Branch, st.Dirty
+	}
+	unlock, locked := tryStatuslineLock(path + ".lock")
+	if !locked {
+		st, _ := loadGitState(path)
+		return st.Branch, st.Dirty
+	}
+	defer unlock()
+
+	b, d, err := gitStatus(cwd)
+	if err != nil {
+		return "", false
+	}
+	if raw, err := json.Marshal(gitState{Branch: b, Dirty: d, At: now}); err == nil {
+		_ = os.WriteFile(path, raw, 0o600)
+	}
+	return b, d
+}
+
+// gitCachePath:每个 cwd 一份 git 缓存,放在 submon 的缓存目录里。
+func gitCachePath(cfg *config.Config, cwd string) string {
+	p, err := cfg.CachePath()
+	if err != nil || cwd == "" {
+		return ""
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(cwd))
+	return filepath.Join(filepath.Dir(p), fmt.Sprintf("git-%08x.json", h.Sum32()))
+}
+
+func loadGitState(path string) (gitState, bool) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return gitState{}, false
+	}
+	var st gitState
+	if err := json.Unmarshal(raw, &st); err != nil {
+		return gitState{}, false
+	}
+	return st, true
+}
+
+// tryStatuslineLock 抢一把"同一时刻只许一个进程做重活"的排他锁(非阻塞)。
+// 拿不到就返回 false —— 调用方必须退化,绝不排队等锁:statusline 的整个
+// 卖点就是秒回,等锁等于把风暴从 git 挪到我们自己的进程上。
+func tryStatuslineLock(path string) (func(), bool) {
+	// 缓存目录可能还没建(全新安装 / 测试隔离目录):锁和缓存都要落在里面。
+	_ = os.MkdirAll(filepath.Dir(path), 0o700)
+	create := func() (*os.File, error) {
+		return os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	}
+	f, err := create()
+	if err != nil {
+		// 陈旧锁:持有者被 Claude Code 超时杀掉时没人清。超过 lockStale
+		// 就认定它死了,清掉重试一次。
+		if fi, statErr := os.Stat(path); statErr == nil && time.Since(fi.ModTime()) > lockStale {
+			_ = os.Remove(path)
+			f, err = create()
+		}
+		if err != nil {
+			return func() {}, false
+		}
+	}
+	_, _ = f.WriteString(strconv.Itoa(os.Getpid()))
+	_ = f.Close()
+	return func() { _ = os.Remove(path) }, true
 }
 
 // contextSegment 渲染 "200k [▍░░░░░░░] 6%"。
@@ -663,24 +851,155 @@ func gitDirty(cwd string) (bool, error) {
 //     (100K–1M,例如 500000 = 对话到 500K 时压缩)
 //
 // 有效上限 = min(AUTO_COMPACT_WINDOW, 实际窗口, MAX_CONTEXT_TOKENS)。
-func contextSegment(cw contextWindowInfo) string {
-	if cw.TotalInputTokens == nil || cw.ContextWindowSize == nil || *cw.ContextWindowSize <= 0 {
+//
+// 取值(含"瞬时归零"的处理)一律走 ctxUsage,三套排版同源。
+func contextSegment(in *statuslineInput, cfg *config.Config, now time.Time) string {
+	pct, effective, ok := ctxUsage(in, cfg, now)
+	if !ok {
 		return ""
 	}
-	total := *cw.ContextWindowSize
-	effective := total
-	if v := envInt64("CLAUDE_CODE_MAX_CONTEXT_TOKENS"); v > 0 && v < effective {
-		effective = v
-	}
-	if v := envInt64("CLAUDE_CODE_AUTO_COMPACT_WINDOW"); v > 0 && v < effective {
-		effective = v
-	}
-	pct := float64(*cw.TotalInputTokens) / float64(effective) * 100
 	color := ctxUsedColor(pct)
 	bar := ctxBar(pct)
 	return color + humanTokens(float64(effective)) + ansiReset + " " +
 		color + "[" + bar + "]" + ansiReset + " " +
 		color + fmt.Sprintf("%.0f%%", pct) + ansiReset
+}
+
+// ctxSample 是"上一帧的上下文用量",落盘只为吃掉瞬时归零。
+type ctxSample struct {
+	Pct       float64   `json:"pct"`
+	Effective int64     `json:"eff"`
+	At        time.Time `json:"at"`
+}
+
+const (
+	// ctxStickyTTL 是瞬时归零的保护窗口。Claude Code 在首次 API 响应之前、
+	// 以及 /compact 之后到下一次响应之间,把 total_input_tokens / used_percentage
+	// 报成 0 或 null(见 docs/statusline.md),真实值几秒内就回来。30s 盖得住
+	// 这个空窗,又不至于让 /clear 之后真实的归零迟迟显示不出来。
+	ctxStickyTTL = 30 * time.Second
+	// ctxWriteMinInterval 是落盘节流:状态栏每帧都跑,这个文件不能变成
+	// 新的 I/O 风暴源(与 gitStatusTTL 同级)。
+	ctxWriteMinInterval = 5 * time.Second
+)
+
+// ctxUsage 是上下文用量唯一的取值入口,三套排版共用。
+//
+// 优先级:
+//  1. used_percentage —— Claude Code 自己算好的已用%,官方推荐,与 /context 一致;
+//  2. total_input_tokens / 有效上限 —— 上一项缺失时的兜底;
+//  3. 上一帧的值(ctxStickyTTL 内)—— 前两样都没有时用它,消掉跳闪;
+//  4. 都没有 → ok=false,整段不渲染。
+//
+// 关键:payload 里的 0 一律按"这一帧没有数据"处理。真实用量不会恰好是 0,
+// 而官方文档明确 0 是首帧/压缩后的中间态 —— 这正是状态栏数字跳到 0 又跳回
+// 来的原因(跳闪)。
+func ctxUsage(in *statuslineInput, cfg *config.Config, now time.Time) (pct float64, effective int64, ok bool) {
+	cw := in.ContextWindow
+
+	// 有效上限 = min(窗口大小, MAX_CONTEXT_TOKENS, AUTO_COMPACT_WINDOW)。
+	eff := int64(0)
+	if cw.ContextWindowSize != nil && *cw.ContextWindowSize > 0 {
+		eff = int64(*cw.ContextWindowSize)
+	}
+	for _, v := range []int64{envInt64("CLAUDE_CODE_MAX_CONTEXT_TOKENS"), envInt64("CLAUDE_CODE_AUTO_COMPACT_WINDOW")} {
+		if v > 0 && (eff <= 0 || v < eff) {
+			eff = v
+		}
+	}
+
+	switch {
+	case cw.UsedPercentage != nil && *cw.UsedPercentage > 0:
+		pct = *cw.UsedPercentage
+	case cw.TotalInputTokens != nil && *cw.TotalInputTokens > 0 && eff > 0:
+		pct = *cw.TotalInputTokens / float64(eff) * 100
+	default:
+		pct = -1 // 这一帧没有可用数据:首帧之前,或压缩进行中
+	}
+
+	path := ctxCachePath(cfg, in.SessionID, in.Workspace.CurrentDir)
+	stored, have := loadCtxSample(path)
+
+	if pct < 0 {
+		if eff <= 0 {
+			eff = stored.Effective
+		}
+		if have && stored.Pct > 0 && now.Sub(stored.At) < ctxStickyTTL {
+			return clampPct(stored.Pct), eff, eff > 0
+		}
+		// 没有可借的上一帧(会话刚开始):渲染 0% 是诚实的。
+		return 0, eff, eff > 0
+	}
+
+	if eff <= 0 {
+		return 0, 0, false
+	}
+	pct = clampPct(pct)
+	saveCtxSample(path, ctxSample{Pct: pct, Effective: eff, At: now}, stored, have, now)
+	return pct, eff, true
+}
+
+// clampPct 把百分比收进 [0,100] —— 上游偶尔会给 >100(缓存 token 语义差)。
+func clampPct(p float64) float64 {
+	if p < 0 {
+		return 0
+	}
+	if p > 100 {
+		return 100
+	}
+	return p
+}
+
+// ctxCachePath 每个会话一份上下文快照,和 git 缓存同目录、同样的哈希键。
+// 键优先用 session_id(会话内稳定、跨会话唯一),老版本 Claude Code 不给时
+// 退回 cwd;两个都没有就不落盘。
+func ctxCachePath(cfg *config.Config, sessionID, cwd string) string {
+	p, err := cfg.CachePath()
+	if err != nil {
+		return ""
+	}
+	key := sessionID
+	if key == "" {
+		key = cwd
+	}
+	if key == "" {
+		return ""
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(key))
+	return filepath.Join(filepath.Dir(p), fmt.Sprintf("ctx-%08x.json", h.Sum32()))
+}
+
+func loadCtxSample(path string) (ctxSample, bool) {
+	if path == "" {
+		return ctxSample{}, false
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ctxSample{}, false
+	}
+	var s ctxSample
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return ctxSample{}, false
+	}
+	return s, true
+}
+
+// saveCtxSample 落盘当前值。节流:同一会话每 ctxWriteMinInterval 最多写一次,
+// 只有有效上限变了(换模型/换窗口)才提前写。
+func saveCtxSample(path string, s, prev ctxSample, have bool, now time.Time) {
+	if path == "" {
+		return
+	}
+	if have && prev.Effective == s.Effective && now.Sub(prev.At) < ctxWriteMinInterval {
+		return
+	}
+	raw, err := json.Marshal(s)
+	if err != nil {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(path), 0o700)
+	_ = os.WriteFile(path, raw, 0o600)
 }
 
 // ctxBar 渲染 N 格宽度的进度条,使用 8 分块 unicode block 字符(精度
@@ -783,7 +1102,7 @@ func quotaSegmentForProvider(cfg *config.Config, name model.Provider, now time.T
 			segs = append(segs, quotaEmptySegment(name, k.Label, entry, cfg, path, now))
 			continue
 		}
-		segs = append(segs, quotaSegmentForEntry(name, k.Label, entry, cfg, now))
+		segs = append(segs, quotaSegmentForEntry(name, k.Label, entry, cfg, path, now))
 	}
 	// 多 key 时用 " | " 分隔(段内窗口已用 " - " 分隔),保持视觉对齐。
 	return strings.Join(segs, ansiWhite+" | "+ansiReset)
@@ -809,11 +1128,13 @@ func quotaEmptySegment(name model.Provider, label string, entry *cache.Entry, cf
 }
 
 // quotaSegmentForEntry 渲染单条 Entry 的配额段(单 key 完整版)。
-func quotaSegmentForEntry(name model.Provider, label string, entry *cache.Entry, cfg *config.Config, now time.Time) string {
+// cachePath 必须是真的缓存路径 —— 传空串会让自愈节流落不了盘,变成每次
+// 渲染都 fork 一个 watch(另一个进程风暴源)。
+func quotaSegmentForEntry(name model.Provider, label string, entry *cache.Entry, cfg *config.Config, cachePath string, now time.Time) string {
 	s := entry.Snapshot
 	ttl := time.Duration(cfg.Cache.TTLSeconds) * time.Second
 	if now.Sub(s.FetchedAt) > ttl {
-		maybeSelfHeal("", entry, cfg, now)
+		maybeSelfHeal(cachePath, entry, cfg, now)
 	}
 
 	var parts []string
@@ -847,13 +1168,27 @@ func quotaSegmentForEntry(name model.Provider, label string, entry *cache.Entry,
 	return out
 }
 
-// maybeSelfHeal 在缓存过期时 fork 后台 watch 刷新。节流:距上次尝试
-// 不足 TTL/2 时跳过,避免 API 故障时每次渲染都发起请求。
+// maybeSelfHeal 在缓存过期时 fork 后台 watch 刷新。两道闸:
+//
+//  1. 时间节流:距上次尝试不足 TTL/2 就跳过(RefreshedAt 落盘);
+//  2. 排他锁:拿不到锁说明已有刷新在跑,直接放弃。
+//
+// 只有闸 1 是不够的:缓存目录不可写或路径为空时 RefreshedAt 落不了盘,
+// 每次渲染都会 fork 一个 watch —— 那是和 git 同级的进程风暴(而且每个
+// watch 都要联网)。cachePath 为空时这里直接不 fork。
 func maybeSelfHeal(cachePath string, entry *cache.Entry, cfg *config.Config, now time.Time) {
+	if cachePath == "" {
+		return
+	}
 	half := time.Duration(cfg.Cache.TTLSeconds) * time.Second / 2
 	if entry != nil && !entry.RefreshedAt.IsZero() && now.Sub(entry.RefreshedAt) < half {
 		return
 	}
+	unlock, locked := tryStatuslineLock(cachePath + ".refresh.lock")
+	if !locked {
+		return
+	}
+	defer unlock()
 	// 先落 RefreshedAt(尽力而为),再 fork 静默刷新进程。
 	if entry != nil && entry.Snapshot != nil {
 		entry.RefreshedAt = now

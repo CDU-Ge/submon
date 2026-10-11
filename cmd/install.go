@@ -54,15 +54,23 @@ var installCmd = &cobra.Command{
 		if installPrint {
 			return sched.Print(cmd, bin, installTimer)
 		}
+		// 定时任务与状态栏互不依赖:一个失败不该吞掉另一个。常见失败是受限
+		// shell(沙箱)写不了 %AppData% 的 VBS 启动器 —— 那样至少把状态栏
+		// 接上,并把真正原因原样告诉用户。
+		var failed error
 		if err := sched.Install(cmd, bin, installTimer); err != nil {
-			return err
+			fmt.Fprintln(cmd.ErrOrStderr(), "定时任务注册失败:", err)
+			failed = err
 		}
 		if !installNoClaude {
 			if err := runInstallClaude(cmd); err != nil {
 				fmt.Fprintln(cmd.ErrOrStderr(), "Claude Code 状态栏注册失败:", err)
+				if failed == nil {
+					failed = err
+				}
 			}
 		}
-		return nil
+		return failed
 	},
 }
 
@@ -108,27 +116,34 @@ func runInstallClaude(cmd *cobra.Command) error {
 			return fmt.Errorf("解析 %s: %w\n  手动修复 JSON 后重试,或 `mv %s %s.bak` 让 submon 重建", path, err, path, path)
 		}
 	}
-	entry := map[string]any{
-		"type":            "command",
-		"command":         bin + " statusline",
-		"padding":         0,
-		"refreshInterval": 30,
-	}
 	if installClaudePrint {
-		out, err := json.MarshalIndent(entry, "", "  ")
+		// 预览走同一套合并逻辑(在副本上),否则 --print 说的和真做的不一致。
+		preview := make(map[string]any, len(settings)+1)
+		for k, v := range settings {
+			preview[k] = v
+		}
+		action := mergeStatuslineSetting(preview, bin, false)
+		out, err := json.MarshalIndent(preview["statusLine"], "", "  ")
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "将写入", path, "的 statusLine 段:")
+		fmt.Fprintln(cmd.OutOrStdout(), "将写入", path, "的 statusLine 段("+statuslineActionText(action)+"):")
 		fmt.Fprintln(cmd.OutOrStdout(), string(out))
 		return nil
 	}
-	// 已经接好了就跳过 — 多次跑 install 不会反复覆盖用户改过的 statusLine 配置。
-	if _, ok := settings["statusLine"]; ok {
-		fmt.Fprintln(cmd.OutOrStdout(), "Claude Code 状态栏:已注册,跳过")
+	// 关键:"已注册"不等于"配对了"。旧版 install 写出的 Windows 反斜杠路径
+	// 会被 Git Bash 当转义符吃掉 → 命令静默失败、状态栏空白。见到自己的条目
+	// 必须能就地纠正(只改 command,保留用户调过的 padding/refreshInterval);
+	// 别人的条目才跳过 —— 这就是"不覆盖用户配置"的原意。
+	action := mergeStatuslineSetting(settings, bin, false)
+	switch action {
+	case statuslineUnchanged:
+		fmt.Fprintln(cmd.OutOrStdout(), "Claude Code 状态栏:已注册且命令正确,跳过")
+		return nil
+	case statuslineForeign:
+		fmt.Fprintln(cmd.OutOrStdout(), "Claude Code 状态栏:已有自定义命令,保持不变(要改指向 submon 请跑 `submon install claude`)")
 		return nil
 	}
-	settings["statusLine"] = entry
 	out, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
 		return err
@@ -139,7 +154,11 @@ func runInstallClaude(cmd *cobra.Command) error {
 	if err := os.WriteFile(path, append(out, '\n'), 0o600); err != nil {
 		return err
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), "Claude Code 状态栏:已写入", path, "(重启会话后生效)")
+	if action == statuslineRepaired {
+		fmt.Fprintln(cmd.OutOrStdout(), "Claude Code 状态栏:命令已修正("+path+",Windows 反斜杠 → 正斜杠);Claude Code 会自动重载")
+	} else {
+		fmt.Fprintln(cmd.OutOrStdout(), "Claude Code 状态栏:已写入", path, "(重启会话后生效)")
+	}
 	return nil
 }
 

@@ -29,6 +29,12 @@ func newScheduler() scheduler { return windowsScheduler{} }
 
 func (windowsScheduler) Name() string { return "Windows 任务计划程序" }
 
+// schtasksRun 是调用 schtasks 的唯一出口。抽成变量是为了测试能注入替身 ——
+// 真实注册会在用户机器上留下计划任务,测试绝不能碰。
+var schtasksRun = func(args ...string) ([]byte, error) {
+	return exec.Command("schtasks", args...).CombinedOutput()
+}
+
 func (windowsScheduler) Install(cmd *cobra.Command, bin, interval string) error {
 	minutes, err := intervalMinutes(interval)
 	if err != nil {
@@ -39,9 +45,11 @@ func (windowsScheduler) Install(cmd *cobra.Command, bin, interval string) error 
 		return err
 	}
 	if err := os.WriteFile(launcher, launcherBytes(bin), 0o644); err != nil {
-		return err
+		return fmt.Errorf("写入启动器 %s 失败: %w\n"+
+			"  该路径写不进去通常是两种原因:在受限 shell(沙箱)里跑,或目录只读。\n"+
+			"  请在普通 PowerShell 窗口重跑;想先看内容用 `submon install --print`。", launcher, err)
 	}
-	out, err := exec.Command("schtasks", createArgs(minutes, launcher)...).CombinedOutput()
+	out, err := schtasksRun(createArgs(minutes, launcher)...)
 	if err != nil {
 		return fmt.Errorf("schtasks /Create: %s", strings.TrimSpace(string(out)))
 	}
@@ -54,7 +62,7 @@ func (windowsScheduler) Install(cmd *cobra.Command, bin, interval string) error 
 func (windowsScheduler) Uninstall(cmd *cobra.Command) error {
 	if err := exec.Command("schtasks", "/Query", "/TN", taskName).Run(); err == nil {
 		// /F 免掉交互确认;查询已确认任务存在,失败就是真失败。
-		if out, err := exec.Command("schtasks", "/Delete", "/F", "/TN", taskName).CombinedOutput(); err != nil {
+		if out, err := schtasksRun("/Delete", "/F", "/TN", taskName); err != nil {
 			return fmt.Errorf("schtasks /Delete: %s", strings.TrimSpace(string(out)))
 		}
 	}

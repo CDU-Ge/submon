@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +13,39 @@ import (
 	"github.com/ge/subscription-monitor/internal/config"
 	"github.com/ge/subscription-monitor/internal/model"
 )
+
+// gitRun 在 dir 里跑一条 git 命令,失败即测试失败。身份与"不签名"显式
+// 给定,免读用户全局配置,结果可复现。
+func gitRun(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	c := exec.Command("git", append([]string{"-C", dir, "-c", "commit.gpgsign=false"}, args...)...)
+	c.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=submon test", "GIT_AUTHOR_EMAIL=test@example.invalid",
+		"GIT_COMMITTER_NAME=submon test", "GIT_COMMITTER_EMAIL=test@example.invalid",
+	)
+	out, err := c.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v 失败: %v\n%s", args, err, out)
+	}
+	return string(out)
+}
+
+// gitFixtureRepo 造一个临时仓库:分支 main、一次提交、工作区干净。
+func gitFixtureRepo(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git 不在 PATH,跳过: %v", err)
+	}
+	dir := t.TempDir()
+	gitRun(t, dir, "init")
+	gitRun(t, dir, "symbolic-ref", "HEAD", "refs/heads/main")
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "add", "a.txt")
+	gitRun(t, dir, "commit", "-m", "init")
+	return dir
+}
 
 func TestStripANSI(t *testing.T) {
 	for in, want := range map[string]string{
@@ -27,18 +63,22 @@ func TestStripANSI(t *testing.T) {
 func TestRenderStatuslineFull(t *testing.T) {
 	cfg := config.Default()
 	in := &statuslineInput{}
-	in.Workspace.CurrentDir = "/home/ge/Projects/subscription-monitor"
+	// cwd 用临时目录:以前写死作者机器的 ~/Projects/subscription-monitor,
+	// 换台机器(尤其 Windows)整个用例就红。分支段单独由
+	// TestRenderStatuslineBranchSegment 覆盖。
+	dir := t.TempDir()
+	isolateAppDirs(t, t.TempDir()) // git 缓存要落在隔离目录,不污染真实缓存
+	in.Workspace.CurrentDir = dir
 	in.Model.Display = "GLM-5.3[1m]"
 	in.Effort.Level = "xhigh"
 	in.FastMode = true
-	used, total := int64(12345), int64(200000)
-	pctx := int64(6)
+	used, total, pctx := 12345.0, 200000.0, 6.0
 	in.ContextWindow = contextWindowInfo{TotalInputTokens: &used, ContextWindowSize: &total, UsedPercentage: &pctx}
 
 	// Quota segment reads the real cache path; absent data degrades to a
 	// hint, which still proves the rest of the line renders.
 	line := renderStatusline(in, cfg, time.Now())
-	for _, want := range []string{"subscription-monitor", "main", "GLM-5.3", "200k", "[", "]", "6%", "xhigh", "fast"} {
+	for _, want := range []string{filepath.Base(dir), "GLM-5.3", "200k", "[", "]", "6%", "xhigh", "fast"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("line missing %q: %s", want, line)
 		}
@@ -57,10 +97,231 @@ func TestRenderStatuslineFull(t *testing.T) {
 			t.Errorf("banned token %q leaked into line: %s", banned, line)
 		}
 	}
+}
 
-	// git segment presence depends on cwd being a repo; the test repo is one.
-	if !strings.Contains(line, "main") {
-		t.Errorf("expected bare branch name in repo: %s", line)
+// TestReadStdinWithin 锁住"绝不无限期等待 stdin"的契约:旧实现 io.ReadAll
+// 在 Claude Code 写完 JSON 却不关管道时会永久阻塞 —— 状态栏一行都不出。
+func TestReadStdinWithin(t *testing.T) {
+	// 1. 有数据 + EOF:原样返回。
+	const payload = `{"model":{"display_name":"GLM-5.3"}}`
+	if got := readStdinWithin(strings.NewReader(payload), 200*time.Millisecond); string(got) != payload {
+		t.Errorf("完整输入应原样返回,得到 %q", got)
+	}
+
+	// 2. 有数据但管道不关:期限内返回已读到的字节(payload 不能丢)。
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { _ = pw.Close(); _ = pr.Close() })
+	go func() { _, _ = pw.Write([]byte(`{"model":`)) }()
+	start := time.Now()
+	got := readStdinWithin(pr, 150*time.Millisecond)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("管道不关时应按期限返回,实际等了 %v", elapsed)
+	}
+	if string(got) != `{"model":` {
+		t.Errorf("应返回已读到的 payload,得到 %q", got)
+	}
+
+	// 3. 一个字都没有且管道不关:期限内返回空,绝不挂死。
+	pr2, pw2 := io.Pipe()
+	t.Cleanup(func() { _ = pw2.Close(); _ = pr2.Close() })
+	start = time.Now()
+	if got := readStdinWithin(pr2, 100*time.Millisecond); len(got) != 0 {
+		t.Errorf("无输入应返回空,得到 %q", got)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("无输入时也应按期限返回,实际等了 %v", elapsed)
+	}
+}
+
+// TestReadStdinWithinReturnsEarlyOnCompletePayload 锁住"payload 自洽就立刻返回":
+// Claude Code 写完 JSON 不一定关管道,旧实现会白等满预算 —— 而 CC 会取消还在
+// 跑的状态栏脚本,那一帧整行空白,也是一种跳闪。
+func TestReadStdinWithinReturnsEarlyOnCompletePayload(t *testing.T) {
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { _ = pw.Close(); _ = pr.Close() })
+	const payload = `{"model":{"display_name":"GLM-5.3"},"context_window":{"used_percentage":42}}`
+	go func() { _, _ = pw.Write([]byte(payload)) }()
+
+	start := time.Now()
+	got := readStdinWithin(pr, 5*time.Second)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("payload 完整后应立即返回,实际等了 %v", elapsed)
+	}
+	if string(got) != payload {
+		t.Errorf("应原样返回完整 payload,得到 %q", got)
+	}
+}
+
+// TestCtxUsagePrefersUsedPercentage: used_percentage 是 Claude Code 自己算好的
+// 值(与 /context 同源);token 比值只是字段缺失时的兜底。
+func TestCtxUsagePrefersUsedPercentage(t *testing.T) {
+	isolateAppDirs(t, t.TempDir())
+	cfg := config.Default()
+	now := time.Now()
+
+	in := &statuslineInput{SessionID: "sess-pref"}
+	used, total, pct := 0.0, 200000.0, 62.0
+	in.ContextWindow = contextWindowInfo{TotalInputTokens: &used, ContextWindowSize: &total, UsedPercentage: &pct}
+	if p, _, ok := ctxUsage(in, cfg, now); !ok || p != 62 {
+		t.Errorf("应优先用 used_percentage,得到 (%v, ok=%v)", p, ok)
+	}
+
+	// 没有 used_percentage 时才回落到 token 比值。
+	in2 := &statuslineInput{SessionID: "sess-tokens"}
+	u2, t2 := 50000.0, 200000.0
+	in2.ContextWindow = contextWindowInfo{TotalInputTokens: &u2, ContextWindowSize: &t2}
+	if p, _, ok := ctxUsage(in2, cfg, now.Add(time.Second)); !ok || p != 25 {
+		t.Errorf("缺 used_percentage 时应按 token 比值,得到 (%v, ok=%v)", p, ok)
+	}
+}
+
+// TestCtxUsageSurvivesTransientZero 是这次跳闪的回归测试:官方文档明确
+// total_input_tokens / used_percentage 在首次响应之前和 /compact 之后到下一次
+// 响应之间都是 0 —— 那是"这一帧没有数据",状态栏不能跟着归零再跳回来。
+func TestCtxUsageSurvivesTransientZero(t *testing.T) {
+	isolateAppDirs(t, t.TempDir())
+	cfg := config.Default()
+	now := time.Now()
+
+	in := &statuslineInput{SessionID: "sess-1"}
+	used, total, pct := 80000.0, 200000.0, 40.0
+	in.ContextWindow = contextWindowInfo{TotalInputTokens: &used, ContextWindowSize: &total, UsedPercentage: &pct}
+	if p, eff, ok := ctxUsage(in, cfg, now); !ok || p != 40 || eff != 200000 {
+		t.Fatalf("正常帧 = (%v, %v, ok=%v), want (40, 200000, true)", p, eff, ok)
+	}
+
+	zero := &statuslineInput{SessionID: "sess-1"}
+	z := 0.0
+	zero.ContextWindow = contextWindowInfo{TotalInputTokens: &z, ContextWindowSize: &total, UsedPercentage: &z}
+	if p, _, ok := ctxUsage(zero, cfg, now.Add(time.Second)); !ok || p < 39 {
+		t.Errorf("瞬时归零应沿用上一帧,得到 (%v, ok=%v)", p, ok)
+	}
+
+	// 保护窗口过后必须真的归零:/clear 之后不能永远显示旧值。
+	if p, _, _ := ctxUsage(zero, cfg, now.Add(ctxStickyTTL+time.Second)); p != 0 {
+		t.Errorf("超过 %s 后应显示真实归零,得到 %v", ctxStickyTTL, p)
+	}
+
+	// 快照按会话隔离:别的会话不能被这个会话的旧值污染。
+	other := &statuslineInput{SessionID: "sess-2"}
+	other.ContextWindow = zero.ContextWindow
+	if p, _, _ := ctxUsage(other, cfg, now.Add(time.Second)); p != 0 {
+		t.Errorf("不同 session 不应共用快照,得到 %v", p)
+	}
+}
+
+// TestRenderStatuslineNoZeroFlicker 三套排版都要对齐:空窗帧不渲染 0%。
+func TestRenderStatuslineNoZeroFlicker(t *testing.T) {
+	isolateAppDirs(t, t.TempDir())
+	cfg := config.Default()
+	now := time.Now()
+
+	good := &statuslineInput{SessionID: "sess-render"}
+	used, total, pct := 120000.0, 200000.0, 60.0
+	good.ContextWindow = contextWindowInfo{TotalInputTokens: &used, ContextWindowSize: &total, UsedPercentage: &pct}
+
+	zero := &statuslineInput{SessionID: "sess-render"}
+	z := 0.0
+	zero.ContextWindow = contextWindowInfo{TotalInputTokens: &z, ContextWindowSize: &total, UsedPercentage: &z}
+
+	for _, layout := range []string{"a", "b", "c"} {
+		cfg.Statusline.Layout = layout
+		if line := renderStatusline(good, cfg, now); !strings.Contains(line, "60%") {
+			t.Fatalf("layout %s 正常帧应显示 60%%: %s", layout, line)
+		}
+		// 归零帧必须仍是上一帧的真实值(60%),而不是跳到 0%。
+		if line := renderStatusline(zero, cfg, now.Add(time.Second)); !strings.Contains(line, "60%") {
+			t.Errorf("layout %s 在瞬时归零帧丢了上下文值: %s", layout, line)
+		}
+	}
+}
+
+// TestRenderStatuslineDoesNotInventDir 守住"不拿进程工作目录冒充会话目录"
+// 的契约:手动跑 `echo '{"model":...}' | submon statusline` 时,payload 里
+// 没有 workspace.current_dir,以前会退回 os.Getwd() 显示 exe 所在目录名
+// (例如二进制在 E:\Tools 就显示 "Tools")—— 凭空出现的段,既误导用户,
+// 又白 spawn 一次 git。
+func TestRenderStatuslineDoesNotInventDir(t *testing.T) {
+	isolateAppDirs(t, t.TempDir())
+	cfg := config.Default()
+
+	base := ""
+	if wd, err := os.Getwd(); err == nil {
+		base = filepath.Base(wd)
+	}
+
+	for _, layout := range []string{"a", "b", "c"} {
+		cfg.Statusline.Layout = layout
+		in := &statuslineInput{}
+		in.Model.Display = "GLM-5.3"
+		line := stripANSI(renderStatusline(in, cfg, time.Now()))
+		if base != "" && strings.Contains(line, base) {
+			t.Errorf("layout %s 把进程工作目录 %q 当成会话目录渲染: %s", layout, base, line)
+		}
+		if layout != "c" && !strings.Contains(line, "GLM-5.3") {
+			t.Errorf("layout %s 丢了模型段: %s", layout, line)
+		}
+	}
+}
+
+// TestRenderStatuslineBranchSegment 三套排版都要渲染分支段(三处调用点
+// 都走同一个单次 gitStatus)。
+func TestRenderStatuslineBranchSegment(t *testing.T) {
+	dir := gitFixtureRepo(t)
+	isolateAppDirs(t, t.TempDir())
+	cfg := config.Default()
+	in := &statuslineInput{}
+	in.Workspace.CurrentDir = dir
+
+	for _, layout := range []string{"a", "b", "c"} {
+		cfg.Statusline.Layout = layout
+		t.Run("layout="+layout, func(t *testing.T) {
+			if line := renderStatusline(in, cfg, time.Now()); !strings.Contains(line, "main") {
+				t.Errorf("layout %s 缺分支段: %s", layout, line)
+			}
+		})
+	}
+}
+
+// TestGitStatusTempRepo 锁住 gitStatus 的解析与脏标记语义:一次 spawn
+// 同时拿分支名 + 脏标记(替代原来的 rev-parse + diff --quiet 两次)。
+func TestGitStatusTempRepo(t *testing.T) {
+	dir := gitFixtureRepo(t)
+
+	branch, dirty, err := gitStatus(dir)
+	if err != nil {
+		t.Fatalf("gitStatus(仓库) 报错: %v", err)
+	}
+	if branch != "main" || dirty {
+		t.Fatalf("干净仓库 = (%q, dirty=%v), want (\"main\", false)", branch, dirty)
+	}
+
+	// untracked 不算脏:构建产物/临时文件不该点亮 *(与 git diff --quiet
+	// HEAD 的语义一致)。
+	if err := os.WriteFile(filepath.Join(dir, "build.out"), []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, dirty, _ := gitStatus(dir); dirty {
+		t.Errorf("untracked 文件不应判为脏")
+	}
+
+	// 跟踪文件的改动才算脏。
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("changed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, dirty, _ := gitStatus(dir); !dirty {
+		t.Errorf("跟踪文件被改动应判为脏")
+	}
+
+	// detached HEAD:与 rev-parse --abbrev-ref 的历史输出对齐("HEAD")。
+	gitRun(t, dir, "checkout", "--detach")
+	if branch, _, _ := gitStatus(dir); branch != "HEAD" {
+		t.Errorf("detached HEAD 分支名 = %q, want \"HEAD\"", branch)
+	}
+
+	// 非仓库目录:返回 error,渲染层据此整段跳过。
+	if _, _, err := gitStatus(t.TempDir()); err == nil {
+		t.Errorf("非 git 目录应报错")
 	}
 }
 
@@ -103,17 +364,66 @@ func TestFastLabel(t *testing.T) {
 }
 
 func TestGitInlineSegment(t *testing.T) {
-	branch, err := gitBranch(".")
+	isolateAppDirs(t, t.TempDir())
+	branch, _, err := gitStatus(".")
 	if err != nil {
 		t.Skipf("not in a git repo: %v", err)
 	}
-	gotBranch, _ := gitInlineSegment(".")
+	cfg := config.Default()
+	gotBranch, _ := gitInlineSegment(cfg, ".", time.Now())
 	if gotBranch != branch {
 		t.Errorf("gitInlineSegment() branch = %q, want %q", gotBranch, branch)
 	}
 	// 不应有 ANSI 包装,纯文本。
 	if strings.Contains(gotBranch, "\033") {
 		t.Errorf("gitInlineSegment should return plain text, got %q", gotBranch)
+	}
+}
+
+// TestGitStatusCachedThrottles 守住"重活节流"契约:TTL 内不再 spawn git,
+// 过期才重新跑。PATH 清空后 git 不可用 —— 缓存命中时仍能拿到旧值,过期后
+// 拿不到,正好证明"命中=没跑 git"。
+func TestGitStatusCachedThrottles(t *testing.T) {
+	dir := gitFixtureRepo(t)
+	isolateAppDirs(t, t.TempDir())
+	cfg := config.Default()
+	now := time.Now()
+
+	if branch, dirty := gitStatusCached(cfg, dir, now); branch != "main" || dirty {
+		t.Fatalf("首次 = (%q, dirty=%v), want (\"main\", false)", branch, dirty)
+	}
+
+	// 缓存必须按目录隔离:会话内换目录时,新目录不能拿到旧目录的结果
+	// (曾经只用 session_id 当键,就踩了这个坑)。
+	if branch, _ := gitStatusCached(cfg, t.TempDir(), now.Add(time.Second)); branch != "" {
+		t.Errorf("不同目录不应共用缓存,得到 %q", branch)
+	}
+
+	// 让 git 彻底不可用。
+	empty := t.TempDir()
+	t.Setenv("PATH", empty)
+
+	if branch, _ := gitStatusCached(cfg, dir, now.Add(2*time.Second)); branch != "main" {
+		t.Errorf("TTL 内应命中缓存(git 已不可用),得到 %q", branch)
+	}
+	if branch, _ := gitStatusCached(cfg, dir, now.Add(gitStatusTTL+time.Second)); branch != "" {
+		t.Errorf("TTL 过期应重新跑 git(此时必然失败),得到 %q", branch)
+	}
+}
+
+// TestStatuslineCommandShellSafe 守住写进 Claude Code 的命令行形状:必须以
+// statusline 结尾、含空格的路径必须加引号(Git Bash 与 PowerShell 都按
+// 空格切词)。Windows 专属的反斜杠转换见 claude_config_windows_test.go。
+func TestStatuslineCommandShellSafe(t *testing.T) {
+	got := statuslineCommand(filepath.Join("opt", "submon", "submon"))
+	if !strings.HasSuffix(got, " statusline") {
+		t.Fatalf("命令必须以 statusline 结尾,得到 %q", got)
+	}
+	if strings.Contains(got, `\`) {
+		t.Errorf("命令里不许留裸反斜杠,得到 %q", got)
+	}
+	if spaced := statuslineCommand(filepath.Join("my tools", "submon.exe")); !strings.HasPrefix(spaced, `"`) {
+		t.Errorf("含空格路径应加引号,得到 %q", spaced)
 	}
 }
 
@@ -255,6 +565,7 @@ func TestPeakHourReminder(t *testing.T) {
 // 走 statuslineProvider="zhipu" 路径,避免被测试环境的 ANTHROPIC_BASE_URL
 // 干扰(那个会指向 MINIMAX,真实缓存里也只有 MINIMAX 数据)。
 func TestPeakHourReminderLayoutIntegration(t *testing.T) {
+	isolateAppDirs(t, t.TempDir()) // 渲染会写 git 缓存,隔离掉真实缓存目录
 	cfg := config.Default()
 	orig := statuslineProvider
 	defer func() { statuslineProvider = orig }()
