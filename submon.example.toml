@@ -76,11 +76,9 @@ priority = 5
 layout = "a"
 
 # statusline provider 选择:
-#   1. --provider 命令行 flag(最高)
-#   2. $ANTHROPIC_BASE_URL 自动识别(走各 provider 在自己文件里声明的规则)
-# 都没命中 → statusline 不显示配额段。
+#   仅 $ANTHROPIC_BASE_URL 自动识别(走各 provider 在自己文件里声明的规则)
+# 未命中 → statusline 不显示配额段。
 #
-# 想临时切换:ANTHROPIC_BASE_URL 改一下,或 `submon statusline --provider kimi`
 # 想看非当前会话的 provider:`submon status kimi` / `submon status opencode`
 #
 # 内建规则不足以覆盖你的私有代理?改 provider 包里对应文件(zhipu.go /

@@ -381,8 +381,8 @@ func TestGitInlineSegment(t *testing.T) {
 }
 
 // TestGitStatusCachedThrottles 守住"重活节流"契约:TTL 内不再 spawn git,
-// 过期才重新跑。PATH 清空后 git 不可用 —— 缓存命中时仍能拿到旧值,过期后
-// 拿不到,正好证明"命中=没跑 git"。
+// 过期才重新跑。PATH 清空后 git 不可用 —— 缓存命中时仍能拿到旧值,过期查询失败保留旧值
+// 并节流,正好证明"命中=没跑 git"。
 func TestGitStatusCachedThrottles(t *testing.T) {
 	dir := gitFixtureRepo(t)
 	isolateAppDirs(t, t.TempDir())
@@ -406,8 +406,8 @@ func TestGitStatusCachedThrottles(t *testing.T) {
 	if branch, _ := gitStatusCached(cfg, dir, now.Add(2*time.Second)); branch != "main" {
 		t.Errorf("TTL 内应命中缓存(git 已不可用),得到 %q", branch)
 	}
-	if branch, _ := gitStatusCached(cfg, dir, now.Add(gitStatusTTL+time.Second)); branch != "" {
-		t.Errorf("TTL 过期应重新跑 git(此时必然失败),得到 %q", branch)
+	if branch, _ := gitStatusCached(cfg, dir, now.Add(gitStatusTTL+time.Second)); branch != "main" {
+		t.Errorf("TTL 过期查询失败应保留旧值,得到 %q", branch)
 	}
 }
 
@@ -481,23 +481,20 @@ func TestQuotaWindowMarkerAndBadge(t *testing.T) {
 func TestPeakHourReminder(t *testing.T) {
 	cfg := config.Default()
 
-	// bind/unbind the package-level --provider flag so resolveStatuslineProvider
-	// 走我们想要的分支,而不是测试环境里的 ANTHROPIC_BASE_URL/config 兜底。
-	orig := statuslineProvider
-	defer func() { statuslineProvider = orig }()
+	// 按会话 base URL 验证 provider 识别。
 
 	// 1. 非 Zhipu:空(其他 provider 不打提醒,这是契约)。
-	statuslineProvider = "minimax"
+	t.Setenv("ANTHROPIC_BASE_URL", "https://api.minimax.io/anthropic")
 	if got := peakHourReminder(cfg, time.Now()); got != "" {
 		t.Errorf("non-Zhipu should be empty, got %q", got)
 	}
-	statuslineProvider = "opencode"
+	t.Setenv("ANTHROPIC_BASE_URL", "https://opencode.ai/zen")
 	if got := peakHourReminder(cfg, time.Now()); got != "" {
 		t.Errorf("non-Zhipu should be empty, got %q", got)
 	}
 
 	// 后续用例全部用 Zhipu。
-	statuslineProvider = "zhipu"
+	t.Setenv("ANTHROPIC_BASE_URL", "https://open.bigmodel.cn/api/anthropic")
 
 	// 锚定 2024-01-15 为周一(2024-01-01 是周一,14 天后同是周一;
 	// 13/14 分别落在周六/周日)。先断言这条假设,免得测试默默过期。
@@ -562,14 +559,11 @@ func TestPeakHourReminder(t *testing.T) {
 
 // TestPeakHourReminderLayoutIntegration 验证三套排版都会拼接 peakHourReminder。
 // 用真实的 renderStatusline 路径,固定 cfg.Statusline.Layout 驱动排版选择。
-// 走 statuslineProvider="zhipu" 路径,避免被测试环境的 ANTHROPIC_BASE_URL
-// 干扰(那个会指向 MINIMAX,真实缓存里也只有 MINIMAX 数据)。
+// 通过 ANTHROPIC_BASE_URL 指定测试会话。
 func TestPeakHourReminderLayoutIntegration(t *testing.T) {
 	isolateAppDirs(t, t.TempDir()) // 渲染会写 git 缓存,隔离掉真实缓存目录
 	cfg := config.Default()
-	orig := statuslineProvider
-	defer func() { statuslineProvider = orig }()
-	statuslineProvider = "zhipu"
+	t.Setenv("ANTHROPIC_BASE_URL", "https://open.bigmodel.cn/api/anthropic")
 
 	// 周一 15:00 CST = 07:00 UTC(高峰内)。
 	tt := time.Date(2024, 1, 15, 7, 0, 0, 0, time.UTC)
@@ -593,7 +587,7 @@ func TestPeakHourReminderLayoutIntegration(t *testing.T) {
 	}
 
 	// 切到 MINIMAX 后:三套排版都不应出现 "高峰"(其他 provider 无特别要求)。
-	statuslineProvider = "minimax"
+	t.Setenv("ANTHROPIC_BASE_URL", "https://api.minimax.io/anthropic")
 	cfg.Statusline.Layout = "a"
 	if line := renderStatusline(in, cfg, tt); strings.Contains(line, "高峰") {
 		t.Errorf("non-Zhipu should not embed 高峰 reminder, got %s", line)
@@ -606,17 +600,13 @@ func TestPeakHourReminderLayoutIntegration(t *testing.T) {
 // 的数据冒充当前会话)。现在 resolveStatuslineProvider 不再硬猜,直接
 // 报错,statusline 也不显示配额段。
 func TestResolveStatuslineProviderRejectsLocal(t *testing.T) {
-	origProv := statuslineProvider
 	origBase := os.Getenv("ANTHROPIC_BASE_URL")
 	defer func() {
-		statuslineProvider = origProv
 		os.Setenv("ANTHROPIC_BASE_URL", origBase)
 	}()
-	statuslineProvider = "" // 清掉 --provider,只走 ANTHROPIC_BASE_URL 分支。
 	os.Setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1")
 
-	cfg := config.Default()
-	if _, err := resolveStatuslineProvider(cfg); err == nil {
+	if _, err := resolveStatuslineProvider(); err == nil {
 		t.Fatal("127.0.0.1 should not resolve to any provider (no rule matches)")
 	}
 }
@@ -626,13 +616,10 @@ func TestResolveStatuslineProviderRejectsLocal(t *testing.T) {
 // 一个含 "kimi" 子串的模型名,只要 ANTHROPIC_BASE_URL 不指向 Kimi,
 // 状态栏就不显示 Kimi 配额。
 func TestNoModelNameMatch(t *testing.T) {
-	origProv := statuslineProvider
 	origBase := os.Getenv("ANTHROPIC_BASE_URL")
 	defer func() {
-		statuslineProvider = origProv
 		os.Setenv("ANTHROPIC_BASE_URL", origBase)
 	}()
-	statuslineProvider = ""
 	os.Setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1")
 
 	cfg := config.Default()
@@ -648,8 +635,7 @@ func TestNoModelNameMatch(t *testing.T) {
 
 // TestProviderBadgeDefaultOff 守住"provider badge 默认关"的契约:
 // quotaSegmentForProvider 默认不输出 badge 文本 -- 多 provider 配置切换
-// 时,看 quota 数字本身就够了。需要排查时用 --show-provider 或
-// SUBMON_SHOW_PROVIDER=1 临时打开。
+// 时,看 quota 数字本身就够了。
 func TestProviderBadgeDefaultOff(t *testing.T) {
 	cfg := config.Default()
 	rem := float64(72)

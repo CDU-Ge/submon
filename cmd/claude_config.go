@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -103,7 +104,7 @@ func statuslineCommand(bin string) string {
 }
 
 // statuslineCommandTail 判断命令是否指向本二进制,是则返回路径之后的参数
-// 部分(调用方用来"只换路径、保留用户自己加的 --provider 等参数")。
+// 部分(调用方用于更新路径并迁移旧参数)。
 //
 // 比较前抹掉引号、把反斜杠归一到正斜杠 —— 旧版 install 写出的
 // "E:\Tools\submon.exe statusline" 必须被认出来,否则永远修不了它。
@@ -161,6 +162,7 @@ func mergeStatuslineSetting(settings map[string]any, bin string, force bool) sta
 	}
 	cur, _ := m["command"].(string)
 	tail, ours := statuslineCommandTail(cur, bin)
+	tail = stripLegacyStatuslineFlags(tail)
 	switch {
 	case !ours:
 		if !force {
@@ -176,8 +178,7 @@ func mergeStatuslineSetting(settings map[string]any, bin string, force bool) sta
 		}
 		return statuslineRepaired
 	case cur != want:
-		// 只换路径:用户自己加的 --provider / --show-provider 等参数保留
-		// (他们的调用方式没变,坏的只是路径的写法)。
+		// 更新路径并移除已取消的 provider 参数,保留其他参数。
 		if tail != "" {
 			m["command"] = statuslinePath(bin) + " " + tail
 		} else {
@@ -212,4 +213,13 @@ func statuslineActionText(a statuslineSettingAction) string {
 func init() {
 	installClaudeCmd.Flags().BoolVar(&claudePrint, "print", false, "只预览将写入的 JSON,不落盘")
 	installCmd.AddCommand(installClaudeCmd)
+}
+
+var legacyStatuslineProviderFlag = regexp.MustCompile(`(^|\s)--provider(?:=|\s+)(?:"[^"]*"|'[^']*'|[^\s]+)`)
+var legacyStatuslineBadgeFlag = regexp.MustCompile(`(^|\s)--show-provider(?:=(?:true|false))?(\s|$)`)
+
+func stripLegacyStatuslineFlags(tail string) string {
+	tail = legacyStatuslineProviderFlag.ReplaceAllString(tail, "")
+	tail = legacyStatuslineBadgeFlag.ReplaceAllString(tail, "$2")
+	return strings.TrimSpace(tail)
 }

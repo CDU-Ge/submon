@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -139,21 +140,18 @@ func refreshColorState() {
 	}
 }
 
-var statuslineProvider string
-var statuslineShowProvider bool
-
 var statuslineCmd = &cobra.Command{
 	Use:   "statusline",
 	Short: "渲染 Claude Code 状态栏",
 	Long: "输出单行状态栏:左稳定(目录/git 分支/模型)→ 中关心(token 使用)\n" +
 		"→ 右变动(effort/fast/订阅配额)。只读缓存,不联网。\n" +
-		"provider 选择顺序: --provider > $ANTHROPIC_BASE_URL 自动识别(内建规则 + [[provider_detection]] 用户规则)。\n" +
+		"provider 仅由 $ANTHROPIC_BASE_URL 自动识别。\n" +
 		"都没有命中 → statusline 不显示配额段,不强行猜 provider。",
 	Example: "  # 在 Claude Code settings.json 里:\n" +
 		"  submon install              # 一键接入 ~/.claude/settings.json\n\n" +
 		"  # 手动调用(不通过 CC):\n" +
 		"  echo '{\"model\":{\"display_name\":\"GLM-5.3\"}}' | submon statusline\n" +
-		"  submon statusline --provider zhipu --show-provider",
+		"  submon statusline",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Claude Code 经管道捕获 statusline 输出并渲染 ANSI — 非 TTY
 		// 不作为关色依据。PersistentPreRun 已按 TTY 规则算过一次,
@@ -214,22 +212,40 @@ func readStdinWithin(r io.Reader, budget time.Duration) []byte {
 		err  error
 	}
 	ch := make(chan chunk, 1)
+	done := make(chan struct{})
+	defer close(done)
+	// 本函数消费并关闭 stdin/pipe,让阻塞的 Read 在返回时退出。
+	if closer, ok := r.(io.Closer); ok {
+		defer closer.Close()
+	}
+	r = io.LimitReader(r, 1<<20) // 异常输入不能无限扩张内存。
+	send := func(c chunk) bool {
+		select {
+		case ch <- c:
+			return true
+		case <-done:
+			return false
+		}
+	}
 	go func() {
 		buf := make([]byte, 32*1024)
 		for {
 			n, err := r.Read(buf)
 			if n > 0 {
-				ch <- chunk{data: append([]byte(nil), buf[:n]...)}
+				if !send(chunk{data: append([]byte(nil), buf[:n]...)}) {
+					return
+				}
 			}
 			if err != nil {
-				ch <- chunk{err: err}
+				send(chunk{err: err})
 				return
 			}
 		}
 	}()
 
 	var out []byte
-	deadline := time.After(budget)
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
 	for {
 		select {
 		case c := <-ch:
@@ -241,8 +257,8 @@ func readStdinWithin(r io.Reader, budget time.Duration) []byte {
 			if c.err != nil || json.Valid(out) {
 				return out // EOF / 出错,或 payload 已完整
 			}
-		case <-deadline:
-			// 只剩这个 goroutine 挂在读上;进程随即退出,不回收也无害。
+		case <-timer.C:
+			// defer 关闭管道并通知发送方退出。
 			return out
 		}
 	}
@@ -260,7 +276,14 @@ func contextPlainSegment(in *statuslineInput, cfg *config.Config, now time.Time)
 // quotaDetailedSegment: layout B 的配额段 "5h 剩 72%（1h9m 后重置） · weekly 剩 74%（5d10h 后重置）"。
 func quotaDetailedSegment(cfg *config.Config, now time.Time) string {
 	segs := quotaWindowSegs(cfg, now, true)
-	return strings.Join(segs, ansiWhite+" · "+ansiReset)
+	if len(segs) == 0 {
+		return ""
+	}
+	out := strings.Join(segs, ansiWhite+" · "+ansiReset)
+	if age := freshTrailer(cfg, now); age != "" {
+		out += " " + age
+	}
+	return out
 }
 
 // quotaMinimalSegment: layout C 的配额段 "72%/74% (↻2m)"。
@@ -279,7 +302,7 @@ func quotaMinimalSegment(cfg *config.Config, now time.Time) string {
 // quotaWindowSegs 抽出各窗口渲染:verbose=true 带标签与倒计时,极简只留 %。
 // 多 key 场景:每个 Key 独立渲染,段间用 " | " 分隔 — 与 layout A 对齐。
 func quotaWindowSegs(cfg *config.Config, now time.Time, verbose bool) []string {
-	name, err := resolveStatuslineProvider(cfg)
+	name, err := resolveStatuslineProvider()
 	if err != nil {
 		return nil
 	}
@@ -301,11 +324,7 @@ func quotaWindowSegs(cfg *config.Config, now time.Time, verbose bool) []string {
 	for _, k := range keys {
 		entry := file.GetLabeled(name, k.Label)
 		if entry == nil || entry.Snapshot == nil {
-			maybeSelfHeal(path, entry, cfg, now)
 			continue
-		}
-		if now.Sub(entry.Snapshot.FetchedAt) > time.Duration(cfg.Cache.TTLSeconds)*time.Second {
-			maybeSelfHeal(path, entry, cfg, now)
 		}
 		var segs []string
 		for _, w := range []*model.Window{entry.Snapshot.ShortWindow, entry.Snapshot.LongWindow} {
@@ -359,7 +378,7 @@ func quotaWindowSegs(cfg *config.Config, now time.Time, verbose bool) []string {
 // 颜色:剩余 < 30min 转红(收尾期),其他黄色(高峰期进行中);
 // 标签 "高峰" 用白色(辅助信息,不动色,沿用 ansiWhite 约定)。
 func peakHourReminder(cfg *config.Config, now time.Time) string {
-	name, err := resolveStatuslineProvider(cfg)
+	name, err := resolveStatuslineProvider()
 	if err != nil || name != model.ProviderZhipu {
 		return ""
 	}
@@ -375,7 +394,7 @@ func peakHourReminder(cfg *config.Config, now time.Time) string {
 		return ""
 	}
 	endAt := time.Date(local.Year(), local.Month(), local.Day(), 18, 0, 0, 0, cst)
-	// 关键:用入参 now 算差,不是 time.Until()(后者读真实时钟,测试与自愈节流都错位)。
+	// 关键:用入参 now 算差,不是 time.Until()(后者读真实时钟,测试会错位)。
 	remaining := endAt.Sub(now)
 	if remaining < 0 {
 		remaining = 0
@@ -391,7 +410,7 @@ func peakHourReminder(cfg *config.Config, now time.Time) string {
 // 的 FetchedAt — 任何 Key 刷新成功就刷新整个 trailer,避免 5h 倒计时
 // 与 weekly 倒计时各挂各的。
 func freshTrailer(cfg *config.Config, now time.Time) string {
-	name, err := resolveStatuslineProvider(cfg)
+	name, err := resolveStatuslineProvider()
 	if err != nil {
 		return ""
 	}
@@ -410,7 +429,7 @@ func freshTrailer(cfg *config.Config, now time.Time) string {
 	age := now.Sub(e.Snapshot.FetchedAt)
 	ttl := time.Duration(cfg.Cache.TTLSeconds) * time.Second
 	if age > ttl {
-		return ansiYellow + fmt.Sprintf("(刷新中·%s前)", humanDuration(age)) + ansiReset
+		return ansiYellow + fmt.Sprintf("(缓存过期·%s前)", humanDuration(age)) + ansiReset
 	}
 	return ansiWhite + fmt.Sprintf("(↻%s)", humanDuration(ttl-age)) + ansiReset
 }
@@ -544,14 +563,14 @@ func fastLabel(in *statuslineInput) string {
 // quotaSegmentFor 选择配额段来源:官方模式且 stdin 带 rate_limits 时,
 // 直接用官方数据(零 API、零缓存);否则回落到订阅 provider 缓存。
 //
-// provider 选择**只看** --provider / $ANTHROPIC_BASE_URL(走
+// provider 选择**只看** $ANTHROPIC_BASE_URL(走
 // resolveStatuslineProvider)。resolve 失败就不显示 — 不静默挑缓存里
 // "最近有数据的 provider",也不靠模型名猜 — 这两种都是错的:
 //   - cache 兜底:本地代理(127.0.0.1)时,会拿之前 Kimi 会话留下的
 //     缓存冒充当前会话,误导。
 //   - 模型名猜:claude / kimi-k2 这种命名交错时必然命中错对象。
 //
-// 想看非当前会话的 provider,用 `submon status <name>` 或 `submon statusline --provider <name>`。
+// 想看非当前会话的 provider,用 `submon status <name>`。
 func quotaSegmentFor(in *statuslineInput, cfg *config.Config, now time.Time) string {
 	if isOfficialClaude() {
 		if q := claudeQuotaSegment(in, now); q != "" {
@@ -697,8 +716,9 @@ func gitInlineSegment(cfg *config.Config, cwd string, now time.Time) (branch str
 
 // gitCmd 是渲染路径上唯一的 git 子进程构造入口 —— 统一挂
 // hideWindowProcAttr,Windows 上才不会每次渲染都闪出控制台窗口。
-func gitCmd(args ...string) *exec.Cmd {
-	c := exec.Command("git", args...)
+func gitCmd(ctx context.Context, args ...string) *exec.Cmd {
+	c := exec.CommandContext(ctx, "git", args...)
+	c.WaitDelay = 25 * time.Millisecond
 	c.SysProcAttr = hideWindowProcAttr()
 	return c
 }
@@ -711,7 +731,9 @@ func gitCmd(args ...string) *exec.Cmd {
 // 正因为不看 untracked,这里显式 --untracked-files=no:大仓库里免掉整棵
 // 工作区的 untracked 扫描(官方文档也点名 git status 是状态栏卡顿主因)。
 func gitStatus(cwd string) (branch string, dirty bool, err error) {
-	out, err := gitCmd("-C", cwd, "--no-optional-locks", "status", "--porcelain=v2", "--branch", "--untracked-files=no").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), gitStatusBudget)
+	defer cancel()
+	out, err := gitOutput(gitCmd(ctx, "-C", cwd, "-c", "core.fsmonitor=false", "--no-optional-locks", "status", "--porcelain=v2", "--branch", "--untracked-files=no"))
 	if err != nil {
 		return "", false, err
 	}
@@ -731,10 +753,10 @@ func gitStatus(cwd string) (branch string, dirty bool, err error) {
 	return branch, dirty, nil
 }
 
-// gitStatusTTL / lockStale 是"重活节流"的两个常数。
+// Git 查询受短时预算和跨进程缓存节流约束。
 const (
-	gitStatusTTL = 5 * time.Second
-	lockStale    = 30 * time.Second
+	gitStatusTTL    = 5 * time.Second
+	gitStatusBudget = 150 * time.Millisecond
 )
 
 // gitState 是分支段落的磁盘缓存快照。
@@ -762,12 +784,7 @@ func gitStatusCached(cfg *config.Config, cwd string, now time.Time) (branch stri
 	}
 	path := gitCachePath(cfg, cwd)
 	if path == "" {
-		// 拿不到缓存目录(极罕见):只做一次直连,不额外放大。
-		b, d, err := gitStatus(cwd)
-		if err != nil {
-			return "", false
-		}
-		return b, d
+		return "", false // 无法节流时省略 Git 段。
 	}
 	if st, ok := loadGitState(path); ok && now.Sub(st.At) < gitStatusTTL {
 		return st.Branch, st.Dirty
@@ -779,14 +796,26 @@ func gitStatusCached(cfg *config.Config, cwd string, now time.Time) (branch stri
 	}
 	defer unlock()
 
-	b, d, err := gitStatus(cwd)
-	if err != nil {
-		return "", false
+	// 获取锁后再读缓存:其他渲染可能刚完成查询。
+	st, _ := loadGitState(path)
+	if now.Sub(st.At) < gitStatusTTL {
+		return st.Branch, st.Dirty
 	}
-	if raw, err := json.Marshal(gitState{Branch: b, Dirty: d, At: now}); err == nil {
+	// 先持久化尝试时间。写失败则不启动子进程;被取消也保留节流。
+	st.At = now
+	raw, err := json.Marshal(st)
+	if err != nil || os.WriteFile(path, raw, 0o600) != nil {
+		return st.Branch, st.Dirty
+	}
+	b, d, err := gitStatus(cwd)
+	if err == nil {
+		st.Branch, st.Dirty = b, d
+	}
+	st.At = now // 超时、非仓库、Git 不可用也节流,保留旧值。
+	if raw, err := json.Marshal(st); err == nil {
 		_ = os.WriteFile(path, raw, 0o600)
 	}
-	return b, d
+	return st.Branch, st.Dirty
 }
 
 // gitCachePath:每个 cwd 一份 git 缓存,放在 submon 的缓存目录里。
@@ -810,32 +839,6 @@ func loadGitState(path string) (gitState, bool) {
 		return gitState{}, false
 	}
 	return st, true
-}
-
-// tryStatuslineLock 抢一把"同一时刻只许一个进程做重活"的排他锁(非阻塞)。
-// 拿不到就返回 false —— 调用方必须退化,绝不排队等锁:statusline 的整个
-// 卖点就是秒回,等锁等于把风暴从 git 挪到我们自己的进程上。
-func tryStatuslineLock(path string) (func(), bool) {
-	// 缓存目录可能还没建(全新安装 / 测试隔离目录):锁和缓存都要落在里面。
-	_ = os.MkdirAll(filepath.Dir(path), 0o700)
-	create := func() (*os.File, error) {
-		return os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	}
-	f, err := create()
-	if err != nil {
-		// 陈旧锁:持有者被 Claude Code 超时杀掉时没人清。超过 lockStale
-		// 就认定它死了,清掉重试一次。
-		if fi, statErr := os.Stat(path); statErr == nil && time.Since(fi.ModTime()) > lockStale {
-			_ = os.Remove(path)
-			f, err = create()
-		}
-		if err != nil {
-			return func() {}, false
-		}
-	}
-	_, _ = f.WriteString(strconv.Itoa(os.Getpid()))
-	_ = f.Close()
-	return func() { _ = os.Remove(path) }, true
 }
 
 // contextSegment 渲染 "200k [▍░░░░░░░] 6%"。
@@ -1063,13 +1066,12 @@ func envInt64(key string) int64 {
 	return v
 }
 
-// quotaSegment 读缓存渲染配额段。provider 选择仅来自 --provider /
+// quotaSegment 读缓存渲染配额段。provider 选择仅来自
 // ANTHROPIC_BASE_URL(走 resolveStatuslineProvider),不靠模型名猜。
 //
-// 缓存过期时触发自愈:fork 一个后台静默 watch 刷新(不阻塞本次渲染),
-// 受 RefreshedAt 节流,失败也不会打爆 API。
+// 缓存更新由定时 watch 负责;渲染绝不启动后台刷新。
 func quotaSegment(cfg *config.Config, now time.Time) string {
-	name, err := resolveStatuslineProvider(cfg)
+	name, err := resolveStatuslineProvider()
 	if err != nil {
 		return "" // quotas are an optional segment; never break the line
 	}
@@ -1099,20 +1101,19 @@ func quotaSegmentForProvider(cfg *config.Config, name model.Provider, now time.T
 	for _, k := range keys {
 		entry := file.GetLabeled(name, k.Label)
 		if entry == nil || entry.Snapshot == nil {
-			segs = append(segs, quotaEmptySegment(name, k.Label, entry, cfg, path, now))
+			segs = append(segs, quotaEmptySegment(k.Label, entry))
 			continue
 		}
-		segs = append(segs, quotaSegmentForEntry(name, k.Label, entry, cfg, path, now))
+		segs = append(segs, quotaSegmentForEntry(k.Label, entry, cfg, now))
 	}
 	// 多 key 时用 " | " 分隔(段内窗口已用 " - " 分隔),保持视觉对齐。
 	return strings.Join(segs, ansiWhite+" | "+ansiReset)
 }
 
-// quotaEmptySegment 在缓存缺失时生成一段"刷新中"提示。沿用单 key 老
-// 体验,只在 --show-provider 或多 key 时显示 label。
-func quotaEmptySegment(name model.Provider, label string, entry *cache.Entry, cfg *config.Config, cachePath string, now time.Time) string {
-	maybeSelfHeal(cachePath, entry, cfg, now)
-	hint := "暂无数据,刷新中…"
+// quotaEmptySegment 在缓存缺失时提示显式刷新。沿用单 key 老
+// 体验,多 key 时显示 label。
+func quotaEmptySegment(label string, entry *cache.Entry) string {
+	hint := "暂无数据,请运行 submon watch"
 	if entry != nil && entry.LastErr != "" {
 		hint = entry.LastErr
 	}
@@ -1120,22 +1121,14 @@ func quotaEmptySegment(name model.Provider, label string, entry *cache.Entry, cf
 	if label != "" && label != "default" {
 		labelPart = "/" + label
 	}
-	badge := ""
-	if statuslineShowProvider {
-		badge = ansiWhite + badgeText(name) + labelPart + " " + ansiReset
-	}
-	return badge + ansiWhite + labelPart + " " + hint + ansiReset
+	return ansiWhite + labelPart + " " + hint + ansiReset
 }
 
 // quotaSegmentForEntry 渲染单条 Entry 的配额段(单 key 完整版)。
-// cachePath 必须是真的缓存路径 —— 传空串会让自愈节流落不了盘,变成每次
-// 渲染都 fork 一个 watch(另一个进程风暴源)。
-func quotaSegmentForEntry(name model.Provider, label string, entry *cache.Entry, cfg *config.Config, cachePath string, now time.Time) string {
+// 过期数据继续展示,并标记缓存年龄。
+func quotaSegmentForEntry(label string, entry *cache.Entry, cfg *config.Config, now time.Time) string {
 	s := entry.Snapshot
 	ttl := time.Duration(cfg.Cache.TTLSeconds) * time.Second
-	if now.Sub(s.FetchedAt) > ttl {
-		maybeSelfHeal(cachePath, entry, cfg, now)
-	}
 
 	var parts []string
 	if s.ShortWindow != nil {
@@ -1148,9 +1141,6 @@ func quotaSegmentForEntry(name model.Provider, label string, entry *cache.Entry,
 		return ""
 	}
 	out := ""
-	if statuslineShowProvider {
-		out = providerBadge(s.Provider) + " "
-	}
 	// 多 key 场景:label 非空且非 default 时,贴在段首(数字前)。
 	if label != "" && label != "default" {
 		out += ansiMagenta + label + ansiReset + " "
@@ -1160,7 +1150,7 @@ func quotaSegmentForEntry(name model.Provider, label string, entry *cache.Entry,
 	age := now.Sub(s.FetchedAt)
 	switch {
 	case age > ttl:
-		out += ansiYellow + fmt.Sprintf(" (刷新中·%s前)", humanDuration(age)) + ansiReset
+		out += ansiYellow + fmt.Sprintf(" (缓存过期·%s前)", humanDuration(age)) + ansiReset
 	default:
 		next := ttl - age
 		out += ansiWhite + fmt.Sprintf(" (↻%s)", humanDuration(next)) + ansiReset
@@ -1168,84 +1158,15 @@ func quotaSegmentForEntry(name model.Provider, label string, entry *cache.Entry,
 	return out
 }
 
-// maybeSelfHeal 在缓存过期时 fork 后台 watch 刷新。两道闸:
-//
-//  1. 时间节流:距上次尝试不足 TTL/2 就跳过(RefreshedAt 落盘);
-//  2. 排他锁:拿不到锁说明已有刷新在跑,直接放弃。
-//
-// 只有闸 1 是不够的:缓存目录不可写或路径为空时 RefreshedAt 落不了盘,
-// 每次渲染都会 fork 一个 watch —— 那是和 git 同级的进程风暴(而且每个
-// watch 都要联网)。cachePath 为空时这里直接不 fork。
-func maybeSelfHeal(cachePath string, entry *cache.Entry, cfg *config.Config, now time.Time) {
-	if cachePath == "" {
-		return
-	}
-	half := time.Duration(cfg.Cache.TTLSeconds) * time.Second / 2
-	if entry != nil && !entry.RefreshedAt.IsZero() && now.Sub(entry.RefreshedAt) < half {
-		return
-	}
-	unlock, locked := tryStatuslineLock(cachePath + ".refresh.lock")
-	if !locked {
-		return
-	}
-	defer unlock()
-	// 先落 RefreshedAt(尽力而为),再 fork 静默刷新进程。
-	if entry != nil && entry.Snapshot != nil {
-		entry.RefreshedAt = now
-		if f, err := cache.New(cachePath).Load(); err == nil {
-			if e := f.Get(entry.Snapshot.Provider); e != nil {
-				e.RefreshedAt = now
-				_ = cache.New(cachePath).Save(f)
-			}
-		}
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		return
-	}
-	cmd := exec.Command(exe, "watch", "--quiet")
-	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
-	cmd.SysProcAttr = detachProcAttr()
-	_ = cmd.Start()
-	// 父进程(statusline)立即退出;子进程按平台规则脱离父进程
-	// (POSIX 由 init 收养,Windows 不挂控制台,见 procattr_*.go),
-	// 刷新完写缓存后自行退出。
-}
-
-// badgeText is the plain (uncolored) provider label.
-func badgeText(p model.Provider) string { return strings.ToUpper(string(p)) }
-
-// providerBadge 渲染 provider tag。**默认情况下不显示**(见
-// statuslineShowProvider / --show-provider),仅在调试 / 多 provider 排查
-// 时打开。打开时走 ansiWhite — 辅助信息不动色(CLAUDE.md 约定)。
-func providerBadge(p model.Provider) string {
-	label := strings.ToUpper(string(p))
-	return ansiWhite + label + ansiReset
-}
-
-// resolveStatuslineProvider: --provider flag > ANTHROPIC_BASE_URL 自动识别。
-//
-// 没有这两条时直接返回 error — statusline 默认不显示,不静默猜测某个
-// provider(用户可能只有 zhipu 想看,强行给 minimax 会误导)。想看
-// 非当前会话的 provider,用 `submon status <provider>` 或 `submon statusline --provider X`。
-//
-// 检测规则由各 provider 在自己文件里声明(DefaultDetectionRules 聚合),
-// 代码层维护,不在 config.toml 暴露给用户。
-func resolveStatuslineProvider(cfg *config.Config) (model.Provider, error) {
-	if statuslineProvider != "" {
-		name := model.Provider(statuslineProvider)
-		if !model.ValidProvider(name) {
-			return "", fmt.Errorf("unknown provider %q", statuslineProvider)
-		}
-		return name, nil
-	}
+// resolveStatuslineProvider 仅根据会话的 ANTHROPIC_BASE_URL 识别 provider。
+// 未识别时省略配额;查看其他 provider 使用 submon status <provider>。
+func resolveStatuslineProvider() (model.Provider, error) {
 	if base := os.Getenv("ANTHROPIC_BASE_URL"); base != "" {
 		if name, err := provider.DetectFromBaseURL(base, nil); err == nil {
 			return name, nil
 		}
 	}
-	return "", fmt.Errorf("cannot resolve provider (set --provider or ANTHROPIC_BASE_URL)")
+	return "", fmt.Errorf("cannot resolve provider from ANTHROPIC_BASE_URL")
 }
 
 // colorizeWindow 渲染一个窗口段,两种形态:
@@ -1303,11 +1224,5 @@ func stripANSI(s string) string {
 }
 
 func init() {
-	statuslineCmd.Flags().StringVar(&statuslineProvider, "provider", "", "要展示的 provider: "+providerListHint())
-	statuslineCmd.Flags().BoolVar(&statuslineShowProvider, "show-provider", false, "在配额段前显示 provider badge(默认关,辅助信息用纯白)")
-	// 环境变量等价于开关 — 临时调试比 --show-provider 方便。
-	if v := os.Getenv("SUBMON_SHOW_PROVIDER"); v != "" && v != "0" && v != "false" {
-		statuslineShowProvider = true
-	}
 	rootCmd.AddCommand(statuslineCmd)
 }

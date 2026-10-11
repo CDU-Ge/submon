@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -46,7 +47,7 @@ func TestMergeStatuslineSetting(t *testing.T) {
 		}
 	})
 
-	t.Run("自己写的但保留用户加的参数", func(t *testing.T) {
+	t.Run("自己写的旧参数应迁移移除", func(t *testing.T) {
 		s := map[string]any{"statusLine": map[string]any{
 			"type": "command", "command": strings.ReplaceAll(want, "/", `\`) + " --provider zhipu",
 		}}
@@ -54,8 +55,8 @@ func TestMergeStatuslineSetting(t *testing.T) {
 			t.Fatalf("action = %q, want repaired", got)
 		}
 		m := s["statusLine"].(map[string]any)
-		if m["command"] != want+" --provider zhipu" {
-			t.Errorf("command = %q, want %q", m["command"], want+" --provider zhipu")
+		if m["command"] != want {
+			t.Errorf("command = %q, want %q", m["command"], want)
 		}
 	})
 
@@ -129,6 +130,21 @@ func TestStatuslineCommandTail(t *testing.T) {
 		tail, ours := statuslineCommandTail(c.cmd, bin)
 		if ours != c.ours || tail != c.tail {
 			t.Errorf("statuslineCommandTail(%q) = (%q, %v), want (%q, %v)", c.cmd, tail, ours, c.tail, c.ours)
+		}
+	}
+}
+
+func TestInstallRemovesLegacyStatuslineFlags(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "submon")
+	want := statuslineCommand(bin)
+	for _, suffix := range []string{" --provider kimi --show-provider", " --provider=zhipu --show-provider=true", " --show-provider=false --provider minimax"} {
+		settings := map[string]any{"statusLine": map[string]any{"type": "command", "command": want + suffix + " --no-color", "padding": 3}}
+		if got := mergeStatuslineSetting(settings, bin, false); got != statuslineRepaired {
+			t.Fatalf("action = %s", got)
+		}
+		entry := settings["statusLine"].(map[string]any)
+		if entry["command"] != want+" --no-color" || entry["padding"] != 3 {
+			t.Fatalf("entry = %v", entry)
 		}
 	}
 }

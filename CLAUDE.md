@@ -34,13 +34,13 @@ watch / status --force                                            └─► watc
 
 - `internal/model`:**Window/Snapshot 归一化模型**。所有 provider 解析成同一形状。关键语义:Zhipu/OpenCode 的 `percentage`/`percent` 是*已用%*,MiniMax 的 `*_remaining_percent` 是*剩余%*——归一层统一翻转为"剩余"。`Window.PredictedWastePct()` 用速率外推 5h 窗口重置时的浪费。`AllProviders()` 是 provider 清单的唯一权威来源。
 - `internal/provider`:Zhipu 按配额条目的 `(type, unit, number)` 元组识别窗口(TOKENS_LIMIT unit=3/5 → 5h,unit=6/1 → 周,TIME_LIMIT unit=5/1 → 月度 MCP);MiniMax 响应字段在顶层(无 data 包装)、时间戳是 epoch 毫秒;OpenCode zen `/zen/go/v1/usage` 的 `percent` 是已用%、`resetsAt` 是 RFC3339,rolling/weekly/monthly 三窗口。`registry.Build` 解析凭据,顺序:**环境变量 > 默认账号 > 内置默认**(zhipu 默认 base_url `https://open.bigmodel.cn/api/anthropic`)。**新增 provider 时**:provider 实现 + `registry.BuildOne/BuildAll` 分支 + `DetectFromBaseURL` + `loginRegistry` 登记 + `AllProviders()` 注册,cmd 层一律遍历 `model.AllProviders()`,不要硬编码列表。
-- `internal/cache`:单 JSON 文件,按 `(provider, label)` 编码 key — 默认 Key 走裸 provider 名(`"zhipu"`)与历史兼容,命名 Key 走 `"zhipu/alice"`。`File.GetLabeled` / `SetLabeled` 是多 key 入口,`Get` / `Set` 仍走默认 key(单 key 老路径)。原子写(temp+rename+flock)。存 snapshot(含 `KeyLabel`)、`RefreshedAt`(statusline 自愈节流)、`AlertState`(告警状态机记忆)、`History`(转换率采样,每 Key 各自一份)。
+- `internal/cache`:单 JSON 文件,按 `(provider, label)` 编码 key — 默认 Key 走裸 provider 名(`"zhipu"`)与历史兼容,命名 Key 走 `"zhipu/alice"`。`File.GetLabeled` / `SetLabeled` 是多 key 入口,`Get` / `Set` 仍走默认 key(单 key 老路径)。原子写(temp+rename+flock)。存 snapshot(含 `KeyLabel`)、`RefreshedAt`(刷新尝试时间,保留旧缓存兼容)、`AlertState`(告警状态机记忆)、`History`(转换率采样,每 Key 各自一份)。
 - **账号模型**:凭据统一存 `[[accounts]]`(`config.Account{Provider, Label, Token, BaseURL}`),gotify 也是账号(`BaseURL`=服务地址、`Token`=app_token)。`config.ProviderKeys(p)` 按 provider 过滤账号并规范化:空 label 的第一个账号即 `default`,其余自动编号 `key-N`,重复 label 后写覆盖前写,空 token 跳过。`registry.BuildAll(p, cfg)` 一次性构造所有账号的 Source,每个 `LabeledSource.Fetch` 把 `Label` 写入 `Snapshot.KeyLabel`。`refresh.Many` 按账号独立取数 + 独立写 cache;`watch` 每个账号各自跑告警状态机(`AlertState` 也按 label 隔离)。status / statusline 多账号段并列渲染,default 与单账号格式**完全一致**(不显示 "default" 字符串)。旧格式(`[zhipu] token` + `[[zhipu.keys]]` + `[notify.gotify] url/app_token`)由 `config.Load()` 内存迁移(见 `legacyConfig`),任何一次 Save 即落盘新 schema。
 - **账号配置入口**:`submon login`(默认添加:交互选 provider/标签/字段);`submon login ls` 列账号;`submon login remove [provider [label]]` 删除(无参数交互选,非 TTY 需 `-f`)。`login ls` 永不打印明文。
 - `internal/predict`:**weekly 必然浪费**检测——人每天最多 3 个 5h 窗口(要休息),`转换率(中位数 Δweekly/Δ5h) × 剩余窗口数` 与 weekly 剩余对比,算出"无论如何都用不完"的部分。无历史时用保守假设 5h/168h≈3%/窗口。
 - `internal/secret`:AES-256-GCM,密钥**自管理**存 `~/.config/submon/secret.key`(0600),不依赖系统 keyring。config.toml 里 token 存 `enc:v1:nonce:ct`。
 - `cmd/watch.go`:两级告警状态机(weekly 必然浪费随时评估;5h 窗口仅重置前 `remind_before` 内评估),组合状态 `weekly:short` 变化才推送,推送失败不推进状态。语义是**催用**(要到期了抓紧用),不是不足告警。
-- `cmd/statusline.go`:必须秒回、永不联网、永不 hard-fail。缓存过期时 fork 后台 `watch --quiet` 自愈(下帧生效)。provider 识别:`--provider` > `ANTHROPIC_BASE_URL` 自动识别(走各 provider 在自己文件里声明的 `xxxRules()`,`DefaultDetectionRules` 聚合;glob `*.z.ai` / path 前缀 / priority 在 `internal/provider/provider.go:Rule`)。三处都没命中 statusline 不显示配额段(没有 default_provider 兜底,避免误导)。模型名含 GLM/zhipu/minimax 时省略对应 provider badge(信息冗余)。**检测规则不进 config.toml** — 加 provider 时改文件。
+- `cmd/statusline.go`:必须秒回、永不联网、永不 hard-fail。渲染不得启动后台 `watch`;配额由定时任务或显式 `watch` 更新。Git 查询按目录缓存 5 秒,150ms 超时,失败同样节流,操作系统非阻塞锁随进程退出释放。provider 识别:仅 `ANTHROPIC_BASE_URL` 自动识别(走各 provider 在自己文件里声明的 `xxxRules()`,`DefaultDetectionRules` 聚合;glob `*.z.ai` / path 前缀 / priority 在 `internal/provider/provider.go:Rule`)。未命中 statusline 不显示配额段(没有 default_provider 兜底,避免误导)。statusline 不展示 provider badge,不提供 provider 参数或 badge 开关。**检测规则不进 config.toml** — 加 provider 时改文件。
 - 凭据解密入口统一是 `cmd/root.go` 的 `loadDecryptedConfig()`(config.Load + DecryptSecrets);`login ls` / `check` 展示存储形态的场景用原始 `config.Load()`。
 
 ## 凭据配置(新增)
@@ -66,7 +66,7 @@ Gotify 走同一安全等级:URL 明文、`app_token` 加密,与 provider 同流
 - **定时任务**:`cmd/schedule.go` 定义 `scheduler` 接口,`schedule_systemd.go`(systemd 用户 timer)与 `schedule_windows.go`(任务计划程序 + UTF-16LE 的 VBS 启动器,避免每 N 分钟闪黑窗)各实现一份。install / check / notify status 只消费接口,新增平台 = 新增一个实现文件。
 - **控制台**:Windows 需要 UTF-8 代码页 + `ENABLE_VIRTUAL_TERMINAL_PROCESSING`(`cmd/console_windows.go`,`prepareConsole` 在 rootCmd 的 PersistentPreRun 里调),终端不能 ANSI 时 `consoleSupportsANSI()` 让 `useColor()` 自动关色。
 - **信号**:`cmd/signal_*.go` 的 `termSignals()`(Windows 只有 Ctrl-C,没有 SIGTERM)。
-- **后台自愈 fork**:`cmd/procattr_*.go` 的 `detachProcAttr()`(Windows 用 `DETACHED_PROCESS`,否则父进程退出会连带杀掉刷新进程)。
+- **渲染子进程**:`cmd/procattr_*.go` 的 `hideWindowProcAttr()`隐藏 Windows Git 控制台;statusline 不启动脱离父进程的刷新任务。Windows Git 加入 KILL_ON_JOB_CLOSE Job Object,父进程被取消时清理 Git 及其后代。`cmd/statusline_lock_*.go` 使用非阻塞 flock / LockFileEx,锁文件不删除。
 - **缓存锁 / 原子替换**:`internal/cache/lock_unix.go`(flock)与 `lock_windows.go`(LockFileEx);`rename_*.go` 是替换实现 —— Windows 上并发读会挡住 MoveFileEx(Go 打开文件不带 FILE_SHARE_DELETE),需要退避重试。
 - PowerShell 调用统一走 `cmd/powershell.go`(强制 UTF-8 输出,解析属性名而不是本地化的文本)。
 

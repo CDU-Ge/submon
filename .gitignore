@@ -328,3 +328,5 @@ skills-lock.json
 
 # 最终编译的二进制文件
 submon
+# Windows statusline resource-test logs (retained locally)
+statusline-logs/

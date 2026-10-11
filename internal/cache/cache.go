@@ -40,9 +40,7 @@ type Entry struct {
 	// FetchedAt is when the snapshot data was fetched.
 	FetchedAt time.Time `json:"fetched_at"`
 	// RefreshedAt is when a refresh was last *attempted* (success or not).
-	// statusline's self-heal uses this to avoid hammering the API when it
-	// keeps failing (e.g. system just woke up, network down): it retries at
-	// most once per TTL/2.
+	// Kept for compatibility with existing cache files; statusline is read-only.
 	RefreshedAt time.Time  `json:"refreshed_at,omitempty"`
 	AlertState  AlertState `json:"alert_state"`
 	// History of usage samples (watch appends one per run, bounded).

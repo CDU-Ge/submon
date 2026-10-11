@@ -78,7 +78,14 @@ Bars and percentages are colored by threshold (green / yellow / red).
 One robbyrussell-style line for Claude Code's statusline, combining the
 workspace dir, git branch/dirty marker, model, context window and subscription
 quotas. Reads the **cache only** — never the network — so it always returns
-instantly and survives API outages by showing stale data.
+quickly and survives API outages by showing stale data.
+
+Rendering never launches `watch` or updates quota caches. Run `submon install`
+to schedule refreshes, or `submon watch` for an immediate refresh. Missing data
+and expired caches are displayed honestly without starting background jobs.
+Git status is cached per directory for 5 seconds, with a 150 ms query budget;
+failed queries are throttled too and preserve the last known branch. If the
+Git cache cannot be written, the query is skipped.
 
 ```
 ➜ subscription-monitor git:(main)✗ GLM-5.3 [12.3k/200k 6%] 5h 97% left·4h22m / W 80% left·5d13h (↻2m)
@@ -87,15 +94,14 @@ instantly and survives API outages by showing stale data.
 - Quota windows read `5h 97% left·4h22m`: percentage, then the `left` marker,
   then the reset countdown; the 5h and weekly windows are separated by a dim
   `/`.
-- Smart provider badge: when the session's model already belongs to the
-  displayed subscription (GLM → zhipu, MiniMax → minimax, opencode → opencode)
-  the badge is omitted as redundant; otherwise `⚡ZHIPU` / `⚡MINIMAX` /
-  `⚡OPENCODE` is shown.
-- Freshness trailer: `(↻2m)` counts down to the next cache refresh while data
-  is fresh; `(age 36m)` (yellow) flags data older than the TTL.
-- Provider selection order: `--provider` flag → `ANTHROPIC_BASE_URL` domain
-  detection (`bigmodel.cn`/`z.ai` → zhipu, `minimax` → minimax, `opencode` →
-  opencode) → `statusline.default_provider` in config.
+- Statusline never displays a provider badge.
+- Freshness trailer: `(↻2m)` counts down while fresh; `(缓存过期·36m前)`
+  marks stale data.
+- Provider comes only from the session's `ANTHROPIC_BASE_URL`; unknown URLs
+  omit quotas. Use `submon status <provider>` to inspect another subscription.
+- The former `--provider`, `--show-provider` and `SUBMON_SHOW_PROVIDER`
+  controls have been removed. `submon install claude` removes the old flags
+  from settings pointing to this binary while preserving other settings.
 
 Claude Code `~/.claude/settings.json` snippet:
 
@@ -200,6 +206,25 @@ tools' configs:
 submon enc "secret"          # → enc:v1:...
 echo "enc:v1:..." | submon enc -d
 ```
+
+## Windows statusline resource test
+
+Run from a Git repository in PowerShell after building `submon.exe`:
+
+```powershell
+.\scripts\statusline-stress.ps1 -Submon .\submon.exe -Workspace . -Iterations 10000
+# Continuous loop within a 30-minute limit, with no deliberate delay:
+.\scripts\statusline-stress.ps1 -Submon .\submon.exe -Iterations 0 -DurationSeconds 1800 -DelayMilliseconds 0
+```
+
+The script pipes mock session JSON into each invocation, with a 3-second
+call timeout. It samples submon, Git, OpenConsole, conhost and PowerShell
+processes every 100 ms and flushes each log entry to disk. Logs are retained
+in a unique `statusline-logs/` directory, including invocation output/timing,
+per-process private bytes/working sets/handles, baseline/peak/final totals,
+and run metadata. It stops on failure or excessive growth (defaults: 512 MiB
+or 64 extra processes). See [test guide](docs/statusline-stress.md) for
+comparison steps and Windows regression tests.
 
 ## Configuration
 

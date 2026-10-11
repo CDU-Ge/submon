@@ -206,3 +206,8 @@ func humanDuration(d time.Duration) string {
 		return fmt.Sprintf("%ds", int(d.Seconds()))
 	}
 }
+
+// providerBadge 用于 status 面板标题;statusline 不展示 provider badge。
+func providerBadge(p model.Provider) string {
+	return ansiWhite + strings.ToUpper(string(p)) + ansiReset
+}

@@ -30,11 +30,11 @@ var watchCmd = &cobra.Command{
 	Long: "刷新全部 provider、更新共享缓存;窗口即将重置且剩余额度较多时\n" +
 		"推送催用提醒。设计为每次 timer 触发运行一次。",
 	Example: "  submon watch                  # 正常模式(供定时任务)\n" +
-		"  submon watch --quiet          # 静默模式(statusline 自愈 fork 用)\n" +
+		"  submon watch --quiet          # 静默模式\n" +
 		"  submon install                # 一键注册定时任务(systemd timer / 任务计划程序)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if watchQuiet {
-			// 静默模式(statusline 自愈 fork):日志全部丢弃。
+			// 静默模式:日志全部丢弃。
 			cmd.SetOut(io.Discard)
 			cmd.SetErr(io.Discard)
 		}
@@ -378,6 +378,6 @@ func joinLines(lines []string) string {
 var watchQuiet bool
 
 func init() {
-	watchCmd.Flags().BoolVar(&watchQuiet, "quiet", false, "静默模式(供 statusline 自愈调用)")
+	watchCmd.Flags().BoolVar(&watchQuiet, "quiet", false, "静默模式")
 	rootCmd.AddCommand(watchCmd)
 }

@@ -3,6 +3,7 @@
 package cmd
 
 import (
+	"context"
 	"testing"
 
 	"golang.org/x/sys/windows"
@@ -13,7 +14,7 @@ import (
 // stdout),任何没挂 hideWindowProcAttr 的控制台子进程(git 最典型)都会
 // 新建控制台窗口 —— 每渲染一帧闪一次黑窗。
 func TestGitSpawnHidesConsole(t *testing.T) {
-	attr := gitCmd("status", "--porcelain=v2", "--branch").SysProcAttr
+	attr := gitCmd(context.Background(), "status", "--porcelain=v2", "--branch").SysProcAttr
 	if attr == nil {
 		t.Fatal("git 子进程没有进程属性:Windows 上会弹控制台窗口")
 	}
@@ -22,17 +23,5 @@ func TestGitSpawnHidesConsole(t *testing.T) {
 	}
 	if attr.CreationFlags&windows.CREATE_NO_WINDOW == 0 {
 		t.Errorf("git 子进程缺 CREATE_NO_WINDOW(CreationFlags=%#x)", attr.CreationFlags)
-	}
-}
-
-// TestDetachProcAttrKeepsDetached 守住自愈 fork 的既有语义:后台刷新进程
-// 必须脱离父进程控制台(否则父进程退出会连带杀掉刷新)。
-func TestDetachProcAttrKeepsDetached(t *testing.T) {
-	attr := detachProcAttr()
-	if attr == nil {
-		t.Fatal("detachProcAttr() = nil, want 脱离控制台的进程属性")
-	}
-	if attr.CreationFlags&windows.DETACHED_PROCESS == 0 {
-		t.Errorf("detachProcAttr 缺 DETACHED_PROCESS(CreationFlags=%#x)", attr.CreationFlags)
 	}
 }
