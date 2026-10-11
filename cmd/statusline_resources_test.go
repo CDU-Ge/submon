@@ -315,9 +315,12 @@ func TestStatuslineTimingKeepsStdoutUnchanged(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimPrefix(strings.TrimSpace(stderr), "SUBMON_STATUSLINE_TIMING ")), &stages); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"run_ms", "cli_ms", "config_ms", "stdin_ms", "render_ms"} {
+	for _, name := range []string{"run_ms", "cli_ms", "config_ms", "stdin_ms", "render_ms", "cli_started_unix_ms", "run_finished_unix_ms"} {
 		if _, ok := stages[name]; !ok {
 			t.Errorf("缺少分段计时 %s", name)
 		}
+	}
+	if stages["cli_started_unix_ms"] < 1e12 || stages["run_finished_unix_ms"] < stages["cli_started_unix_ms"] {
+		t.Fatalf("跨进程边界必须使用 Unix 毫秒时间戳: %v", stages)
 	}
 }

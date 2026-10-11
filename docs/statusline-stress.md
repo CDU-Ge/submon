@@ -68,3 +68,8 @@ run-summary.json 的 latency_ms 给出单次调用均值、P50/P95、最大值�
 RunE 之外很慢时,须区分 CLI 执行前检查和系统启动/Go 初始化。本程序关闭 Cobra 默认 Explorer 启动检测:该检测在 Windows 会获取系统进程快照,对每次 statusline 调用都执行,与渲染内容无关。关闭后双击可执行文件不再展示 Cobra 的暂停提示;通过终端使用命令。
 
 重新编译 Go 二进制后,-TraceStages 还会记录 cli_ms:从 cmd.Execute 入口到 statusline RunE 入口的耗时。摘要中 outside_cli_ms 是端到端耗时减去 run_ms 和 cli_ms,仍包含系统启动、Go 初始化及输出收尾,不能直接认定某个系统服务为原因。仅更新脚本、未重新构建二进制时不会出现这项新计时。
+
+
+重新构建后,诊断行提供 cli_started_unix_ms 与 run_finished_unix_ms。脚本使用同一系统的 UTC 时钟与父进程 Stopwatch,把剩余耗时拆成 before_cli_ms(启动调用前到 cmd.Execute 入口)和 after_run_ms(RunE 计时结束到父进程观察到退出)。前者包含进程创建、加载、Go runtime 与包初始化;后者包含诊断写入、CLI 返回、进程退出与父进程唤醒。这是定位边界,不能单独指认某个系统组件。两项逐次写入 invocations.jsonl,均值写入 application_stage_mean_ms 并打印。时钟精度或系统校时可能导致小误差,负值原样保留;旧二进制缺少时间戳时保持 null,不计算这两项均值。
+
+2026-10-11 Windows 实测:process_start_ms 平均 3.69ms,wait_exit_ms 82.59ms,drain_output_ms 0.03ms;禁用 Explorer 检测后整体 P50 仍约 85ms,主因尚未定位。Linux 同脚本 200 次(仅移除平台限制,不采样、零间隔、开启诊断)P50 3.10ms/P95 3.69ms,进入 CLI 前平均 2.61ms、完成至观察退出 0.22ms。该对照不能替代 Windows 实测,日志保留于 statusline-logs/local-boundaries-20261011T104419Z/。

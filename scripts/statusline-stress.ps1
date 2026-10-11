@@ -64,7 +64,7 @@ $metadata = @{
     call_timeout_ms = $CallTimeoutMilliseconds; max_growth_mb = $MaxGrowthMB
     max_extra_processes = $MaxExtraProcesses; tracked_names = @($names)
     process_sampling = -not $NoProcessSampling; capture_invocation_memory = [bool]$CaptureInvocationMemory
-    trace_stages = [bool]$TraceStages; timing_schema = 2
+    trace_stages = [bool]$TraceStages; timing_schema = 3
     # Log only routing information, never tokens or the full environment.
     anthropic_base_url = $env:ANTHROPIC_BASE_URL
     measurement = 'Global named-process samples; counts include existing unrelated processes. Sub-100ms processes can be missed. Private bytes and working sets are distinct; summed working sets include shared pages.'
@@ -151,6 +151,7 @@ $loopClock = [Diagnostics.Stopwatch]::new()
 $invocationTotal = 0.0; $metricsTotal = 0.0; $delayTotal = 0.0
 $stageTotals = @{ run_ms = 0.0; config_ms = 0.0; stdin_ms = 0.0; render_ms = 0.0; outside_run_ms = 0.0 }
 $stageCount = 0
+$boundaryCount = 0; $beforeCLITotal = 0.0; $afterRunTotal = 0.0
 $cliStageTotal = 0.0; $outsideCLITotal = 0.0; $cliStageCount = 0
 $durations = New-Object double[] 10000 # Bounded ring, even for continuous runs.
 Write-Host "日志目录: $logRoot"
@@ -178,6 +179,7 @@ try {
         if ($TraceStages) { $info.EnvironmentVariables['SUBMON_STATUSLINE_TIMING'] = '1' }
         $active = New-Object Diagnostics.Process
         $active.StartInfo = $info
+        $startUnixMS = [double]([DateTime]::UtcNow.Ticks - 621355968000000000L) / 10000
         $timer = [Diagnostics.Stopwatch]::StartNew()
         $null = $active.Start()
         $processStartMS = $timer.Elapsed.TotalMilliseconds
@@ -209,6 +211,7 @@ try {
         $metricsClock.Stop()
         $metricsMS = $metricsClock.Elapsed.TotalMilliseconds
         $applicationStages = $null
+        $beforeCLIMS = $null; $afterRunMS = $null
         if ($TraceStages) {
             $match = [regex]::Match($stderr.Result, '(?m)^SUBMON_STATUSLINE_TIMING (.+)$')
             if ($match.Success) {
@@ -220,11 +223,21 @@ try {
                     $outsideCLITotal += $durationMS - $applicationStages.run_ms - $applicationStages.cli_ms
                     $cliStageCount++
                 }
+                if ($null -ne $applicationStages.PSObject.Properties['cli_started_unix_ms'] -and
+                    $null -ne $applicationStages.PSObject.Properties['run_finished_unix_ms']) {
+                    # Cross-process boundaries use the shared system wall clock.
+                    # Preserve negative values so clock adjustments stay visible.
+                    $beforeCLIMS = $applicationStages.cli_started_unix_ms - $startUnixMS
+                    $afterRunMS = $startUnixMS + $exitMS - $applicationStages.run_finished_unix_ms
+                    $beforeCLITotal += $beforeCLIMS; $afterRunTotal += $afterRunMS
+                    $boundaryCount++
+                }
                 $stageCount++
             }
         }
         $record = @{
             application_stages = $applicationStages
+            before_cli_ms = $beforeCLIMS; after_run_ms = $afterRunMS
             timestamp_utc = [DateTime]::UtcNow.ToString('o'); iteration = $state.Completed + 1
             pid = $childId; duration_ms = $durationMS
             process_start_ms = $processStartMS; input_ms = $inputEndMS - $processStartMS
@@ -283,7 +296,11 @@ try {
         $stageMeans.cli_ms = $cliStageTotal / $cliStageCount
         $stageMeans.outside_cli_ms = $outsideCLITotal / $cliStageCount
     }
-    $summary = @{ cli_traced_invocations = $cliStageCount; application_stage_mean_ms = $stageMeans; traced_invocations = $stageCount
+    if ($boundaryCount -gt 0) {
+        $stageMeans.before_cli_ms = $beforeCLITotal / $boundaryCount
+        $stageMeans.after_run_ms = $afterRunTotal / $boundaryCount
+    }
+    $summary = @{ boundary_traced_invocations = $boundaryCount; cli_traced_invocations = $cliStageCount; application_stage_mean_ms = $stageMeans; traced_invocations = $stageCount
         setup_seconds = $setupSeconds; loop_seconds = $loopClock.Elapsed.TotalSeconds
         observation_tail_seconds = $tailClock.Elapsed.TotalSeconds
         invocation_total_ms = $invocationTotal; metrics_total_ms = $metricsTotal; delay_total_ms = $delayTotal
@@ -297,6 +314,9 @@ try {
     }
     if ($cliStageCount -gt 0) {
         Write-Host ("RunE 前 CLI {0:N2}ms, CLI 之外启动及收尾 {1:N2}ms" -f $stageMeans.cli_ms, $stageMeans.outside_cli_ms)
+    }
+    if ($boundaryCount -gt 0) {
+        Write-Host ("进入 CLI 前 {0:N2}ms, RunE 完成至观察到退出 {1:N2}ms" -f $stageMeans.before_cli_ms, $stageMeans.after_run_ms)
     }
     Write-Host "日志已保留: $logRoot"
 }

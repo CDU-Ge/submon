@@ -40,6 +40,7 @@ func (t *statuslineTiming) write(w io.Writer) {
 		return
 	}
 	t.end("run", t.started)
+	t.stages["run_finished_unix_ms"] = float64(time.Now().UnixMicro()) / 1000
 	raw, err := json.Marshal(t.stages)
 	if err == nil {
 		fmt.Fprintf(w, "SUBMON_STATUSLINE_TIMING %s\n", raw)

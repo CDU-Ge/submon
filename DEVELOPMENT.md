@@ -16,3 +16,5 @@ Windows 子进程清理测试为 `TestWindowsGitDiesWithStatuslineParent`,验证
 状态栏性能诊断使用脚本 -TraceStages,必要时加 -NoProcessSampling -DelayMilliseconds 0。单次 duration_ms 排除退出后内存查询与日志写入;总循环、准备和尾部采样单独报告。程序内 SUBMON_STATUSLINE_TIMING=1 只写 stderr,默认不开启。
 
 Cobra MousetrapHelpText 必须保持空字符串,避免 Windows 每次 Execute 创建系统进程快照来检测 Explorer 启动。cli_ms 从 cmd.Execute 入口计到 RunE 入口,覆盖 Cobra 前置检查;outside_cli_ms 记录其余启动及收尾开销。
+
+跨进程边界诊断 before_cli_ms/after_run_ms 使用共享系统 UTC 时钟,仅在 -TraceStages 且二进制提供时间戳时计算;默认路径不读取额外时钟。记录保留精度与校时误差,不得将其中一个阶段直接归因于特定系统服务。

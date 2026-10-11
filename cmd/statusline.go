@@ -157,6 +157,7 @@ var statuslineCmd = &cobra.Command{
 		if timing != nil && cmd.Context() != nil {
 			if start, ok := cmd.Context().Value(cliTimingKey{}).(time.Time); ok {
 				timing.end("cli", start)
+				timing.stages["cli_started_unix_ms"] = float64(start.UnixMicro()) / 1000
 			}
 		}
 		defer timing.write(cmd.ErrOrStderr())
