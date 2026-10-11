@@ -90,3 +90,19 @@ RunE 之外很慢时,须区分 CLI 执行前检查和系统启动/Go 初始化�
 未注明采样的对照均为零间隔、-NoProcessSampling -TraceStages。inittrace-go126 的 stderr 显示 TOML 库初始化约 49ms,来源为 eager 读取本地时区。只更换 TOML 库会将该开销移到旧 JSON 时间戳解析;statusline 同时使用 UTC 后才消除重复系统时区初始化。新配置编解码器支持 TOML 1.1,配置兼容回归覆盖中文、Windows literal 路径、多行凭据与设置往返;旧带 offset 的 JSON 缓存仍保持原时刻。诊断仍默认关闭。
 
 sampled-500 共 175 次采样。结束时测试程序/Git 均为 0 个,OpenConsole 数量为基线的 3 个,conhost 为基线的 6 个;追踪组 private bytes 从约 385.71MiB 到 383.55MiB。采样包含其他用户进程,本次短时实验未见残留累积,不能据此证明长期无泄漏。
+
+
+### 缓存与剩余启动成本对照
+
+现有配额 JSON、按目录 Git 5 秒缓存、按会话上下文缓存跨进程保留。修复时区后,配置/输入/渲染合计约 1–2ms;这些阶段增加输出缓存不会消除进入 CLI 前的成本。完整输出依赖当前 stdin、环境与倒计时,复用旧整行还需要处理失效与更新。
+
+同台 Windows,同 Go 1.26.1 源码、零间隔、不采样、TraceStages,每组 100 次:
+
+| 构建或诊断条件 | P50 | P95 |
+| --- | ---: | ---: |
+| 普通 console 发布构建(-trimpath -s -w) | 32.75ms | 35.23ms |
+| 同构建,GOMAXPROCS=1 | 32.22ms | 33.83ms |
+| 同源码和编译器,GUI subsystem 构建 | 17.94ms | 19.53ms |
+| console 构建,仅测量父进程临时 timeBeginPeriod(1) | 32.58ms | 34.80ms |
+
+GUI subsystem 是定位实验,未更改生产构建或替换项目程序。后续采用之前须验证普通 CLI 的控制台连接、shell 等待与交互输入语义。timeBeginPeriod 探针在 finally 中恢复,未更改系统设置。实验程序均名为 submon.exe,目录区分构建。日志保留于远端和本地 statusline-logs/ssh-diagnostics-20261011/cache-question-*。
