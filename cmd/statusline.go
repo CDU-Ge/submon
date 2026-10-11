@@ -153,17 +153,22 @@ var statuslineCmd = &cobra.Command{
 		"  echo '{\"model\":{\"display_name\":\"GLM-5.3\"}}' | submon statusline\n" +
 		"  submon statusline",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		timing := newStatuslineTiming(os.Getenv("SUBMON_STATUSLINE_TIMING") == "1")
+		defer timing.write(cmd.ErrOrStderr())
 		// Claude Code 经管道捕获 statusline 输出并渲染 ANSI — 非 TTY
 		// 不作为关色依据。PersistentPreRun 已按 TTY 规则算过一次,
 		// 这里翻开关后重算(纯内存运算,秒回预算内)。
 		allowPipeColor = true
 		refreshColorState()
 
+		stage := timing.begin()
 		cfg, err := config.Load()
 		if err != nil {
 			cfg = config.Default() // statusline must never hard-fail
 		}
 
+		timing.end("config", stage)
+		stage = timing.begin()
 		// Read Claude Code's JSON payload from stdin; absent fields degrade.
 		// 绝不阻塞:见 readStdinWithin —— 卡在 stdin 上等于状态栏一行都不出。
 		var in statuslineInput
@@ -173,8 +178,11 @@ var statuslineCmd = &cobra.Command{
 			}
 		}
 
+		timing.end("stdin", stage)
+		stage = timing.begin()
 		out := cmd.OutOrStdout()
 		fmt.Fprintln(out, renderStatusline(&in, cfg, time.Now()))
+		timing.end("render", stage)
 		return nil
 	},
 }

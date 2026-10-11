@@ -16,7 +16,10 @@ param(
     [ValidateRange(20, 10000)][int]$SampleMilliseconds = 100,
     [ValidateRange(100, 60000)][int]$CallTimeoutMilliseconds = 3000,
     [ValidateRange(1, 65536)][int]$MaxGrowthMB = 512,
-    [ValidateRange(1, 10000)][int]$MaxExtraProcesses = 64
+    [ValidateRange(1, 10000)][int]$MaxExtraProcesses = 64,
+    [switch]$NoProcessSampling,
+    [switch]$CaptureInvocationMemory,
+    [switch]$TraceStages
 )
 
 $ErrorActionPreference = 'Stop'
@@ -53,12 +56,19 @@ $metadata = @{
     delay_ms = $DelayMilliseconds; sample_ms = $SampleMilliseconds
     call_timeout_ms = $CallTimeoutMilliseconds; max_growth_mb = $MaxGrowthMB
     max_extra_processes = $MaxExtraProcesses; tracked_names = @($names)
+    process_sampling = -not $NoProcessSampling; capture_invocation_memory = [bool]$CaptureInvocationMemory
+    trace_stages = [bool]$TraceStages; timing_schema = 2
     # Log only routing information, never tokens or the full environment.
     anthropic_base_url = $env:ANTHROPIC_BASE_URL
     measurement = 'Global named-process samples; counts include existing unrelated processes. Sub-100ms processes can be missed. Private bytes and working sets are distinct; summed working sets include shared pages.'
 }
 [IO.File]::WriteAllText((Join-Path $logRoot 'metadata.json'), ($metadata | ConvertTo-Json -Depth 5), $utf8)
 $state = [hashtable]::Synchronized(@{ Stop = $false; Ready = $false; Guard = ''; Completed = 0; Error = ''; Samples = 0 })
+$observer = $null
+$async = $null
+if ($NoProcessSampling) {
+    $state.Ready = $true
+} else {
 $observer = [PowerShell]::Create()
 $null = $observer.AddScript({
     param($Shared, $Names, $Root, $Interval, $GrowthMB, $ExtraProcesses)
@@ -123,16 +133,24 @@ $null = $observer.AddScript({
     }
 }).AddArgument($state).AddArgument(@($names)).AddArgument($logRoot).AddArgument($SampleMilliseconds).AddArgument($MaxGrowthMB).AddArgument($MaxExtraProcesses)
 $async = $observer.BeginInvoke()
+}
 $invocations = New-Object IO.StreamWriter((Join-Path $logRoot 'invocations.jsonl'), $false, $utf8)
 $invocations.AutoFlush = $true
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $reason = '已完成'
 $failed = 0
 $active = $null
+$loopClock = [Diagnostics.Stopwatch]::new()
+$invocationTotal = 0.0; $metricsTotal = 0.0; $delayTotal = 0.0
+$stageTotals = @{ run_ms = 0.0; config_ms = 0.0; stdin_ms = 0.0; render_ms = 0.0; outside_run_ms = 0.0 }
+$stageCount = 0
+$durations = New-Object double[] 10000 # Bounded ring, even for continuous runs.
 Write-Host "日志目录: $logRoot"
 try {
     while (-not $state.Ready -and -not $state.Error -and $clock.Elapsed.TotalSeconds -lt 5) { Start-Sleep -Milliseconds 20 }
     if (-not $state.Ready) { throw "采样器启动失败: $($state.Error)" }
+    $setupSeconds = $clock.Elapsed.TotalSeconds
+    $loopClock.Start()
     while (($Iterations -eq 0 -or $state.Completed -lt $Iterations) -and $clock.Elapsed.TotalSeconds -lt $DurationSeconds) {
         if ($state.Error) { throw "采样器已停止: $($state.Error)" }
         if ($state.Guard) { $reason = $state.Guard; break }
@@ -149,10 +167,12 @@ try {
         $info.RedirectStandardError = $true
         $info.StandardOutputEncoding = $utf8
         $info.StandardErrorEncoding = $utf8
+        if ($TraceStages) { $info.EnvironmentVariables['SUBMON_STATUSLINE_TIMING'] = '1' }
         $active = New-Object Diagnostics.Process
         $active.StartInfo = $info
         $timer = [Diagnostics.Stopwatch]::StartNew()
         $null = $active.Start()
+        $processStartMS = $timer.Elapsed.TotalMilliseconds
         $childId = $active.Id
         # Drain both streams concurrently to avoid pipe deadlocks.
         $stdout = $active.StandardOutput.ReadToEndAsync()
@@ -163,28 +183,57 @@ try {
         $active.StandardInput.BaseStream.Write($inputBytes, 0, $inputBytes.Length)
         $active.StandardInput.BaseStream.Flush()
         $active.StandardInput.Close()
+        $inputEndMS = $timer.Elapsed.TotalMilliseconds
         $timedOut = -not $active.WaitForExit($CallTimeoutMilliseconds)
         if ($timedOut) { $active.Kill() }
         if (-not $active.WaitForExit(2000)) { throw "无法停止本次子进程 $childId" }
+        $exitMS = $timer.Elapsed.TotalMilliseconds
         $null = $stdout.Wait(2000)
         $null = $stderr.Wait(2000)
         if (-not $stdout.IsCompleted -or -not $stderr.IsCompleted) { throw '子进程退出后输出管道仍未关闭。' }
+        $timer.Stop() # End-to-end invocation excludes post-exit metrics/logging.
+        $durationMS = $timer.Elapsed.TotalMilliseconds
+        $metricsClock = [Diagnostics.Stopwatch]::StartNew()
         $peakWorking = $null; $peakPaged = $null
-        try { $peakWorking = $active.PeakWorkingSet64; $peakPaged = $active.PeakPagedMemorySize64 } catch { }
+        if ($CaptureInvocationMemory) {
+            try { $peakWorking = $active.PeakWorkingSet64; $peakPaged = $active.PeakPagedMemorySize64 } catch { }
+        }
+        $metricsClock.Stop()
+        $metricsMS = $metricsClock.Elapsed.TotalMilliseconds
+        $applicationStages = $null
+        if ($TraceStages) {
+            $match = [regex]::Match($stderr.Result, '(?m)^SUBMON_STATUSLINE_TIMING (.+)$')
+            if ($match.Success) {
+                $applicationStages = $match.Groups[1].Value | ConvertFrom-Json
+                foreach ($name in @('run_ms', 'config_ms', 'stdin_ms', 'render_ms')) { $stageTotals[$name] += $applicationStages.$name }
+                $stageTotals.outside_run_ms += $durationMS - $applicationStages.run_ms
+                $stageCount++
+            }
+        }
         $record = @{
+            application_stages = $applicationStages
             timestamp_utc = [DateTime]::UtcNow.ToString('o'); iteration = $state.Completed + 1
-            pid = $childId; duration_ms = $timer.Elapsed.TotalMilliseconds
+            pid = $childId; duration_ms = $durationMS
+            process_start_ms = $processStartMS; input_ms = $inputEndMS - $processStartMS
+            wait_exit_ms = $exitMS - $inputEndMS; drain_output_ms = $durationMS - $exitMS
+            metrics_ms = $metricsMS
             exit_code = $active.ExitCode; timed_out = $timedOut
             peak_working_set_bytes = $peakWorking; peak_paged_bytes = $peakPaged
             stdout = $stdout.Result; stderr = $stderr.Result
         }
         $invocations.WriteLine(($record | ConvertTo-Json -Depth 4 -Compress))
+        $durations[$state.Completed % $durations.Length] = $durationMS
+        $invocationTotal += $durationMS; $metricsTotal += $metricsMS
         $state.Completed++
         if ($record.exit_code -ne 0 -or $timedOut) { $failed++ }
         $active.Dispose(); $active = $null
         if ($timedOut) { $reason = '本次调用超时,记录日志后停止。'; break }
         if ($failed -gt 0) { $reason = '本次调用失败,记录日志后停止。'; break }
-        if ($DelayMilliseconds -gt 0) { Start-Sleep -Milliseconds $DelayMilliseconds }
+        if ($DelayMilliseconds -gt 0) {
+            $delayClock = [Diagnostics.Stopwatch]::StartNew()
+            Start-Sleep -Milliseconds $DelayMilliseconds
+            $delayTotal += $delayClock.Elapsed.TotalMilliseconds
+        }
     }
     if ($clock.Elapsed.TotalSeconds -ge $DurationSeconds) { $reason = '已达到测试时长限制。' }
 } catch {
@@ -192,18 +241,43 @@ try {
     [IO.File]::AppendAllText((Join-Path $logRoot 'errors.log'), ($reason + [Environment]::NewLine), $utf8)
     throw
 } finally {
+    $loopClock.Stop()
     if ($null -ne $active) {
         try { if (-not $active.HasExited) { $active.Kill(); $null = $active.WaitForExit(2000) } } catch { }
         $active.Dispose()
     }
     $invocations.Dispose()
-    # Capture a tail after invocations stop to reveal residual Git/console processes.
-    Start-Sleep -Seconds 3
-    $state.Stop = $true
-    try { $null = $observer.EndInvoke($async) } finally { $observer.Dispose() }
-    $summary = @{ ended_at_utc = [DateTime]::UtcNow.ToString('o'); completed = $state.Completed; failed = $failed; elapsed_seconds = $clock.Elapsed.TotalSeconds; reason = $reason; guard = $state.Guard; observer_error = $state.Error }
+    # Keep observation tail separate from invocation/loop latency.
+    $tailClock = [Diagnostics.Stopwatch]::StartNew()
+    if ($null -ne $observer) {
+        Start-Sleep -Seconds 3
+        $state.Stop = $true
+        try { $null = $observer.EndInvoke($async) } finally { $observer.Dispose() }
+    }
+    $tailClock.Stop()
+    $latency = $null
+    if ($state.Completed -gt 0) {
+        $count = [Math]::Min($state.Completed, $durations.Length)
+        $values = @($durations[0..($count-1)] | Sort-Object)
+        $latency = @{ samples = $count; population = 'last up to 10000 invocations'; mean_all = $invocationTotal / $state.Completed; p50 = $values[[Math]::Ceiling($count * 0.5)-1]; p95 = $values[[Math]::Ceiling($count * 0.95)-1]; max = $values[-1] }
+    }
+    $stageMeans = $null
+    if ($stageCount -gt 0) {
+        $stageMeans = @{}
+        foreach ($name in $stageTotals.Keys) { $stageMeans[$name] = $stageTotals[$name] / $stageCount }
+    }
+    $summary = @{ application_stage_mean_ms = $stageMeans; traced_invocations = $stageCount
+        setup_seconds = $setupSeconds; loop_seconds = $loopClock.Elapsed.TotalSeconds
+        observation_tail_seconds = $tailClock.Elapsed.TotalSeconds
+        invocation_total_ms = $invocationTotal; metrics_total_ms = $metricsTotal; delay_total_ms = $delayTotal
+        latency_ms = $latency; process_sampling = -not $NoProcessSampling; ended_at_utc = [DateTime]::UtcNow.ToString('o'); completed = $state.Completed; failed = $failed; elapsed_seconds = $clock.Elapsed.TotalSeconds; reason = $reason; guard = $state.Guard; observer_error = $state.Error }
     [IO.File]::WriteAllText((Join-Path $logRoot 'run-summary.json'), ($summary | ConvertTo-Json), $utf8)
     Write-Host "已完成 $($state.Completed) 次,失败 $failed 次。停止原因: $reason"
+    Write-Host ("调用循环 {0:N2}s,收尾采样 {1:N2}s" -f $loopClock.Elapsed.TotalSeconds, $tailClock.Elapsed.TotalSeconds)
+    if ($null -ne $latency) { Write-Host ("单次调用 P50 {0:N2}ms, P95 {1:N2}ms" -f $latency.p50, $latency.p95) }
+    if ($null -ne $stageMeans) {
+        Write-Host ("程序内平均: 配置 {0:N2}ms, stdin {1:N2}ms,渲染 {2:N2}ms; RunE 之外 {3:N2}ms" -f $stageMeans.config_ms, $stageMeans.stdin_ms, $stageMeans.render_ms, $stageMeans.outside_run_ms)
+    }
     Write-Host "日志已保留: $logRoot"
 }
 if ($failed -gt 0 -or $state.Guard -or $state.Error) { exit 1 }

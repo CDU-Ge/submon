@@ -80,6 +80,10 @@ func TestGitFailureIsCachedAndKeepsLastBranch(t *testing.T) {
 
 // TestMain 将测试二进制兼作可控 Git,避免依赖 shell,Windows 也能运行。
 func TestMain(m *testing.M) {
+	if os.Getenv("SUBMON_TEST_STATUSLINE") == "1" {
+		Execute()
+		os.Exit(0)
+	}
 	if os.Getenv("SUBMON_TEST_JOB_PARENT") == "1" {
 		_ = os.Unsetenv("SUBMON_TEST_JOB_PARENT")
 		exe, err := os.Executable()
@@ -275,6 +279,45 @@ func TestStatuslineHasNoProviderFlags(t *testing.T) {
 	for _, name := range []string{"provider", "show-provider"} {
 		if statuslineCmd.Flags().Lookup(name) != nil {
 			t.Errorf("statusline 仍暴露 --%s", name)
+		}
+	}
+}
+
+func TestStatuslineTimingKeepsStdoutUnchanged(t *testing.T) {
+	isolateAppDirs(t, t.TempDir())
+	t.Setenv("SUBMON_TEST_STATUSLINE", "1")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("SUBMON_STATUSLINE_TIMING", "0")
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func() (string, string) {
+		c := exec.Command(exe, "statusline", "--no-color")
+		c.Stdin = strings.NewReader(`{"model":{"display_name":"Claude"}}`)
+		var stdout, stderr bytes.Buffer
+		c.Stdout, c.Stderr = &stdout, &stderr
+		if err := c.Run(); err != nil {
+			t.Fatalf("运行失败: %v %s", err, stderr.String())
+		}
+		return stdout.String(), stderr.String()
+	}
+	baseline, stderr := run()
+	if stderr != "" {
+		t.Fatalf("默认产生了诊断日志: %q", stderr)
+	}
+	t.Setenv("SUBMON_STATUSLINE_TIMING", "1")
+	traced, stderr := run()
+	if baseline == "" || traced != baseline {
+		t.Fatalf("诊断改变输出: %q != %q", traced, baseline)
+	}
+	var stages map[string]float64
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(strings.TrimSpace(stderr), "SUBMON_STATUSLINE_TIMING ")), &stages); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"run_ms", "config_ms", "stdin_ms", "render_ms"} {
+		if _, ok := stages[name]; !ok {
+			t.Errorf("缺少分段计时 %s", name)
 		}
 	}
 }

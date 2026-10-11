@@ -12,3 +12,5 @@ Go 版本以 go.mod 为准。构建与回归入口见 Makefile,实现约定见 C
 statusline 是高频、可取消的一次性任务。配额渲染只读缓存,不得启动后台刷新。Git 查询最多等待 150ms,按目录缓存 5 秒,失败也节流;无法持久化节流时跳过查询。非阻塞内核锁由进程生命周期管理,不得按文件年龄抢占或删除锁文件。stdin 消费后关闭管道,输入最多 1 MiB。
 
 Windows 子进程清理测试为 `TestWindowsGitDiesWithStatuslineParent`,验证父进程被终止后 Job Object 清理 Git。实机循环脚本为 `scripts/statusline-stress.ps1`,用法及日志说明见 `docs/statusline-stress.md`;运行日志保留本地,不提交生成日志。
+
+状态栏性能诊断使用脚本 -TraceStages,必要时加 -NoProcessSampling -DelayMilliseconds 0。单次 duration_ms 排除退出后内存查询与日志写入;总循环、准备和尾部采样单独报告。程序内 SUBMON_STATUSLINE_TIMING=1 只写 stderr,默认不开启。

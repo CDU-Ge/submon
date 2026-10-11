@@ -23,3 +23,7 @@ recorded_at: "2026-10-11T09:23:27+00:00"
 用户要求移除 statusline 的 --provider 与 --show-provider,保持渲染仅依赖会话路由;取消 SUBMON_SHOW_PROVIDER 环境开关,安装时迁移旧参数。用户观察到大量 Git 和 OpenConsole,要求 Windows 循环输入 mock JSON 的资源观测脚本,保留日志,全部改动一次性提交。
 
 补充验收:旧参数不再暴露;Git 在 Windows 父进程终止后被清理;PowerShell 脚本独立记录进程数量、private bytes、工作集、句柄及逐次调用输出,超时后保留日志并停止循环。Windows 实际内存行为由用户在设备上执行脚本验证。
+
+### E0003 调用性能反馈
+
+用户报告 Windows 运行 5 秒完成 52 次。尚未提供 invocations.jsonl 的单次耗时;不能确定总时长是否包含默认间隔和收尾采样。要求准确区分程序耗时与测试开销,为 Windows 定位启动/配置/stdin/渲染瓶颈提供数据。默认渲染输出与无诊断时行为保持不变。

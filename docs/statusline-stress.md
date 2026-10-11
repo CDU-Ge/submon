@@ -22,10 +22,10 @@ go build -o submon.exe .
 | --- | --- |
 | metadata.json | 二进制路径与 SHA256、工作区、采样参数、主 PowerShell PID、路由 URL |
 | mock-data.json | 实际输入 |
-| invocations.jsonl | 每次调用的 PID、耗时、退出码、超时、峰值工作集/分页内存、stdout/stderr |
+| invocations.jsonl | 每次调用的 PID、端到端耗时、启动/input/等待退出/输出收尾/内存查询耗时、退出码、stdout/stderr;可选程序内计时 |
 | process-samples.jsonl | 独立采样的 PID、名称、启动时间、private bytes、working set、句柄和 CPU 时间;各进程组总量 |
-| process-summary.json | 基线、峰值、结束时各组数量与内存 |
-| run-summary.json | 完成次数、失败次数、停止原因 |
+| process-summary.json | 开启采样时记录基线、峰值、结束时各组数量与内存 |
+| run-summary.json | 完成次数、失败次数、停止原因;准备/循环/收尾时间,单次 P50/P95 与程序内各阶段均值 |
 | errors.log / observer-errors.log | 测试或采样异常,仅出现异常时创建 |
 
 默认单次调用 3 秒超时。总体 private bytes 比基线增长超过 512 MiB,或进程数增加超过 64,脚本停止启动下一次调用并保存日志。可用 `-MaxGrowthMB` / `-MaxExtraProcesses` 调整。仅超时的本次子进程会被终止;不清理系统上其他 Git/OpenConsole 进程。旧版本若留下脱离父进程的 watch,停止循环并不保证其退出,比较前后版本时应先完成旧版本清理。
@@ -43,3 +43,20 @@ go test ./cmd -run 'TestGitTimeoutAndThrottle|TestWindowsGitDiesWithStatuslinePa
 ```
 
 Windows Git 使用 CREATE_NO_WINDOW,并绑定 KILL_ON_JOB_CLOSE Job Object。[微软 Job Object 文档](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)说明该标志会在最后一个 job handle 关闭时终止关联进程。循环测试日志用于实机验证,不预先断言内存泄漏已排除。
+
+## 调用性能计时
+
+默认每次有 10ms 间隔,结束还有 3 秒尾部采样。总耗时除以次数包含这些时间,不能用来判断单次 statusline 延迟。schema 2 的 duration_ms 从启动子进程之前开始,到进程退出且输出排空结束;退出后的内存查询和日志写入另行统计。
+
+```powershell
+# 先隔离采样、等待间隔和收尾开销,分解程序内耗时
+.\scripts\statusline-stress.ps1 -Submon .\submon.exe -Iterations 200 -DelayMilliseconds 0 -NoProcessSampling -TraceStages
+# 再启用进程采样比较,保持其他参数相同
+.\scripts\statusline-stress.ps1 -Submon .\submon.exe -Iterations 200 -DelayMilliseconds 0 -TraceStages
+```
+
+-NoProcessSampling 跳过进程采样、3 秒收尾和进程增长保护,仍保留单次超时及完整调用日志。默认不查询已退出进程的内存属性,独立采样仍记录内存;需要这些属性时使用 -CaptureInvocationMemory,开销记录为 metrics_ms。相关峰值字段默认 null。
+
+-TraceStages 在子进程中启用 SUBMON_STATUSLINE_TIMING=1,只向 stderr 写一行 JSON。程序内计时拆分配置加载、stdin 读取与解析、渲染,run_ms 包含 RunE 内总耗时。outside_run_ms 是端到端耗时减去 run_ms,包含系统创建进程、Go 初始化、CLI 入口及输出收尾,不能将其全部视作某一种原因。
+
+run-summary.json 的 latency_ms 给出单次调用均值、P50/P95、最大值。均值覆盖全部调用;分位数和最大值使用最近最多 10000 次的固定容量样本,避免连续运行时统计器无限增长。loop_seconds 包含进程调用、日志、内存查询与实际等待间隔;observation_tail_seconds 独立显示最后采样的耗时。application_stage_mean_ms 在诊断开启时给出程序内各阶段与 RunE 之外的平均耗时。

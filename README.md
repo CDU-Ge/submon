@@ -217,6 +217,16 @@ Run from a Git repository in PowerShell after building `submon.exe`:
 .\scripts\statusline-stress.ps1 -Submon .\submon.exe -Iterations 0 -DurationSeconds 1800 -DelayMilliseconds 0
 ```
 
+For latency diagnosis without sampling or deliberate delays:
+
+```powershell
+.\scripts\statusline-stress.ps1 -Submon .\submon.exe -Iterations 200 -DelayMilliseconds 0 -NoProcessSampling -TraceStages
+```
+
+The summary separates loop time from the 3-second observation tail and reports
+per-call P50/P95. Optional stage tracing writes only to stderr. Post-exit memory
+queries are opt-in (`-CaptureInvocationMemory`) and excluded from call latency.
+
 The script pipes mock session JSON into each invocation, with a 3-second
 call timeout. It samples submon, Git, OpenConsole, conhost and PowerShell
 processes every 100 ms and flushes each log entry to disk. Logs are retained
