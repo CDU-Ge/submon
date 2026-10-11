@@ -151,6 +151,7 @@ $loopClock = [Diagnostics.Stopwatch]::new()
 $invocationTotal = 0.0; $metricsTotal = 0.0; $delayTotal = 0.0
 $stageTotals = @{ run_ms = 0.0; config_ms = 0.0; stdin_ms = 0.0; render_ms = 0.0; outside_run_ms = 0.0 }
 $stageCount = 0
+$cliStageTotal = 0.0; $outsideCLITotal = 0.0; $cliStageCount = 0
 $durations = New-Object double[] 10000 # Bounded ring, even for continuous runs.
 Write-Host "日志目录: $logRoot"
 try {
@@ -214,6 +215,11 @@ try {
                 $applicationStages = $match.Groups[1].Value | ConvertFrom-Json
                 foreach ($name in @('run_ms', 'config_ms', 'stdin_ms', 'render_ms')) { $stageTotals[$name] += $applicationStages.$name }
                 $stageTotals.outside_run_ms += $durationMS - $applicationStages.run_ms
+                if ($null -ne $applicationStages.PSObject.Properties['cli_ms']) {
+                    $cliStageTotal += $applicationStages.cli_ms
+                    $outsideCLITotal += $durationMS - $applicationStages.run_ms - $applicationStages.cli_ms
+                    $cliStageCount++
+                }
                 $stageCount++
             }
         }
@@ -273,7 +279,11 @@ try {
         $stageMeans = @{}
         foreach ($name in $stageTotals.Keys) { $stageMeans[$name] = $stageTotals[$name] / $stageCount }
     }
-    $summary = @{ application_stage_mean_ms = $stageMeans; traced_invocations = $stageCount
+    if ($cliStageCount -gt 0) {
+        $stageMeans.cli_ms = $cliStageTotal / $cliStageCount
+        $stageMeans.outside_cli_ms = $outsideCLITotal / $cliStageCount
+    }
+    $summary = @{ cli_traced_invocations = $cliStageCount; application_stage_mean_ms = $stageMeans; traced_invocations = $stageCount
         setup_seconds = $setupSeconds; loop_seconds = $loopClock.Elapsed.TotalSeconds
         observation_tail_seconds = $tailClock.Elapsed.TotalSeconds
         invocation_total_ms = $invocationTotal; metrics_total_ms = $metricsTotal; delay_total_ms = $delayTotal
@@ -284,6 +294,9 @@ try {
     if ($null -ne $latency) { Write-Host ("单次调用 P50 {0:N2}ms, P95 {1:N2}ms" -f $latency.p50, $latency.p95) }
     if ($null -ne $stageMeans) {
         Write-Host ("程序内平均: 配置 {0:N2}ms, stdin {1:N2}ms,渲染 {2:N2}ms; RunE 之外 {3:N2}ms" -f $stageMeans.config_ms, $stageMeans.stdin_ms, $stageMeans.render_ms, $stageMeans.outside_run_ms)
+    }
+    if ($cliStageCount -gt 0) {
+        Write-Host ("RunE 前 CLI {0:N2}ms, CLI 之外启动及收尾 {1:N2}ms" -f $stageMeans.cli_ms, $stageMeans.outside_cli_ms)
     }
     Write-Host "日志已保留: $logRoot"
 }

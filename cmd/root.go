@@ -2,9 +2,11 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/ge/subscription-monitor/internal/config"
 	"github.com/ge/subscription-monitor/internal/model"
@@ -73,6 +75,9 @@ func loadDecryptedConfig() (*config.Config, error) {
 }
 
 func Execute() {
+	if os.Getenv("SUBMON_STATUSLINE_TIMING") == "1" {
+		rootCmd.SetContext(context.WithValue(context.Background(), cliTimingKey{}, time.Now()))
+	}
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -80,5 +85,8 @@ func Execute() {
 }
 
 func init() {
+	// Cobra 在 Windows 默认通过进程快照检测 Explorer 双击启动。
+	// 本程序按 CLI/定时任务运行,不需要该提示,高频入口不能支付此成本。
+	cobra.MousetrapHelpText = ""
 	rootCmd.AddCommand(versionCmd)
 }

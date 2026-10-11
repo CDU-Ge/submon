@@ -315,7 +315,7 @@ func TestStatuslineTimingKeepsStdoutUnchanged(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimPrefix(strings.TrimSpace(stderr), "SUBMON_STATUSLINE_TIMING ")), &stages); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"run_ms", "config_ms", "stdin_ms", "render_ms"} {
+	for _, name := range []string{"run_ms", "cli_ms", "config_ms", "stdin_ms", "render_ms"} {
 		if _, ok := stages[name]; !ok {
 			t.Errorf("缺少分段计时 %s", name)
 		}

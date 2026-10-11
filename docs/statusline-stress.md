@@ -62,3 +62,9 @@ Windows Git 使用 CREATE_NO_WINDOW,并绑定 KILL_ON_JOB_CLOSE Job Object。[�
 run-summary.json 的 latency_ms 给出单次调用均值、P50/P95、最大值。均值覆盖全部调用;分位数和最大值使用最近最多 10000 次的固定容量样本,避免连续运行时统计器无限增长。loop_seconds 包含进程调用、日志、内存查询与实际等待间隔;observation_tail_seconds 独立显示最后采样的耗时。application_stage_mean_ms 在诊断开启时给出程序内各阶段与 RunE 之外的平均耗时。
 
 脚本优先按字面文件路径解析 -Submon,默认路径中的 .. 会规范化;通过 PATH 查找时仅选择第一个应用,避免多个候选路径被拼接。路径回归可运行 `pwsh -NoProfile -File scripts/tests/statusline-stress-path.tests.ps1`,也可使用 Windows PowerShell。
+
+## Windows CLI 入口检查
+
+RunE 之外很慢时,须区分 CLI 执行前检查和系统启动/Go 初始化。本程序关闭 Cobra 默认 Explorer 启动检测:该检测在 Windows 会获取系统进程快照,对每次 statusline 调用都执行,与渲染内容无关。关闭后双击可执行文件不再展示 Cobra 的暂停提示;通过终端使用命令。
+
+重新编译 Go 二进制后,-TraceStages 还会记录 cli_ms:从 cmd.Execute 入口到 statusline RunE 入口的耗时。摘要中 outside_cli_ms 是端到端耗时减去 run_ms 和 cli_ms,仍包含系统启动、Go 初始化及输出收尾,不能直接认定某个系统服务为原因。仅更新脚本、未重新构建二进制时不会出现这项新计时。

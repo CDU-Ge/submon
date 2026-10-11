@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+type cliTimingKey struct{}
+
 // 仅诊断时输出到 stderr;不会修改 statusline 的 stdout 或启动额外进程。
 type statuslineTiming struct {
 	started time.Time

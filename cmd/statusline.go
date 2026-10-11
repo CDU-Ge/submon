@@ -154,6 +154,11 @@ var statuslineCmd = &cobra.Command{
 		"  submon statusline",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		timing := newStatuslineTiming(os.Getenv("SUBMON_STATUSLINE_TIMING") == "1")
+		if timing != nil && cmd.Context() != nil {
+			if start, ok := cmd.Context().Value(cliTimingKey{}).(time.Time); ok {
+				timing.end("cli", start)
+			}
+		}
 		defer timing.write(cmd.ErrOrStderr())
 		// Claude Code 经管道捕获 statusline 输出并渲染 ANSI — 非 TTY
 		// 不作为关色依据。PersistentPreRun 已按 TTY 规则算过一次,
