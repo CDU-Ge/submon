@@ -26,7 +26,14 @@ $ErrorActionPreference = 'Stop'
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
     throw '此脚本需要 Windows。'
 }
-$binary = (Get-Command $Submon -CommandType Application -ErrorAction Stop).Source
+# Resolve literal files first. Get-Command can yield multiple application
+# candidates; passing their Source array to FileName joins paths with spaces.
+$binary = if (Test-Path -LiteralPath $Submon -PathType Leaf) {
+    (Get-Item -LiteralPath $Submon -Force -ErrorAction Stop).FullName
+} else {
+    $application = Get-Command -Name $Submon -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    (Get-Item -LiteralPath $application.Path -Force -ErrorAction Stop).FullName
+}
 $workingDirectory = (Resolve-Path -LiteralPath $Workspace).Path
 if (-not $LogDirectory) {
     $LogDirectory = Join-Path (Get-Location).Path ('statusline-logs\' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
