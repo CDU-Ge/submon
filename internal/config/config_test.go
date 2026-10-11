@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/ge/subscription-monitor/internal/model"
@@ -327,5 +328,55 @@ app_token = "old-gotify"
 	if token != "new-gotify" || url != "" {
 		// 账号已存在 → 旧格式整条忽略,新账号优先。
 		t.Errorf("gotify = %q / %q", url, token)
+	}
+}
+
+// 配置编码器替换必须保留平台路径、多行凭据和全部已有设置。
+func TestConfigCodecPreservesValues(t *testing.T) {
+	t.Setenv("SUBMON_LAYOUT", "")
+	cfg := writeConfig(t, `
+[[accounts]]
+provider = "kimi"
+label = "工作账号"
+token = """line1
+line2"quoted""""
+base_url = "https://example.test/api"
+
+[cache]
+ttl_seconds = 123
+path = 'E:\缓存\submon\cache.json'
+
+[notify]
+warn_below_pct = 12.5
+crit_below_pct = 2.5
+remind_before = "45m"
+waste_notify_pct = 34.5
+waste_urgent_pct = 67.5
+
+[notify.gotify]
+priority = 7
+
+[statusline]
+layout = "c"
+
+[unused]
+# TOML 1.1:支持多行内联表,未知字段依旧忽略。
+metadata = {
+  date = 2026-10-11,
+  text = "未知字段",
+}
+`)
+	if cfg.Cache.Path != `E:\缓存\submon\cache.json` || cfg.Accounts[0].Token != "line1\nline2\"quoted\"" {
+		t.Fatalf("配置解析丢失路径或凭据: %+v", cfg)
+	}
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	again, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(again, cfg) {
+		t.Fatalf("配置往返不一致: %+v != %+v", again, cfg)
 	}
 }

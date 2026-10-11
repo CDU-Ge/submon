@@ -18,3 +18,7 @@ Windows 子进程清理测试为 `TestWindowsGitDiesWithStatuslineParent`,验证
 Cobra MousetrapHelpText 必须保持空字符串,避免 Windows 每次 Execute 创建系统进程快照来检测 Explorer 启动。cli_ms 从 cmd.Execute 入口计到 RunE 入口,覆盖 Cobra 前置检查;outside_cli_ms 记录其余启动及收尾开销。
 
 跨进程边界诊断 before_cli_ms/after_run_ms 使用共享系统 UTC 时钟,仅在 -TraceStages 且二进制提供时间戳时计算;默认路径不读取额外时钟。记录保留精度与校时误差,不得将其中一个阶段直接归因于特定系统服务。
+
+配置解析与生成使用 github.com/pelletier/go-toml/v2(TOML 1.1)。不得引入在包初始化中读取系统本地时区的依赖:Windows 高频短进程会重复付出这项开销。statusline 在 RunE 入口、读取数据及启动 goroutine 之前设定 time.Local = time.UTC;时间戳按绝对时刻计算,高峰提醒显式使用 UTC+8,旧带 offset 的缓存兼容,新状态栏缓存写 UTC。其他命令保持系统时区。
+
+Windows 原生测试须区别 FileMode 与 ACL:POSIX 0600 断言仅适用于 Unix。Git 超时集成测试预热复制后的测试可执行文件,避免首次冷加载在进入模拟 Git 之前耗尽预算;生产 Git 预算保持 150ms。

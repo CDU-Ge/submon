@@ -153,6 +153,11 @@ var statuslineCmd = &cobra.Command{
 		"  echo '{\"model\":{\"display_name\":\"GLM-5.3\"}}' | submon statusline\n" +
 		"  submon statusline",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// 此一次性命令只处理绝对时间与显式 UTC+8 提醒。JSON 时间解析会
+		// 查询 time.Local;Windows 首次加载系统时区约需 50ms,每次进程都重做。
+		// 在读取 stdin/缓存及启动读取 goroutine 前设定进程时区,旧 offset
+		// 时间戳仍保留原时刻,新缓存统一写 UTC。其他 CLI 命令不受影响。
+		time.Local = time.UTC
 		timing := newStatuslineTiming(os.Getenv("SUBMON_STATUSLINE_TIMING") == "1")
 		if timing != nil && cmd.Context() != nil {
 			if start, ok := cmd.Context().Value(cliTimingKey{}).(time.Time); ok {

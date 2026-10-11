@@ -80,7 +80,13 @@ func TestGitFailureIsCachedAndKeepsLastBranch(t *testing.T) {
 
 // TestMain 将测试二进制兼作可控 Git,避免依赖 shell,Windows 也能运行。
 func TestMain(m *testing.M) {
+	if os.Getenv("SUBMON_TEST_FAST_EXIT") == "1" {
+		os.Exit(0)
+	}
 	if os.Getenv("SUBMON_TEST_STATUSLINE") == "1" {
+		if os.Getenv("SUBMON_TEST_LOCAL_OFFSET") == "1" {
+			time.Local = time.FixedZone("test-offset", 8*3600)
+		}
 		Execute()
 		os.Exit(0)
 	}
@@ -141,6 +147,15 @@ func TestGitTimeoutAndThrottle(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, name), raw, 0700); err != nil {
 		t.Fatal(err)
+	}
+	// 新路径的测试 exe 在 Windows 首次加载可能超过 Git 的生产预算。
+	// 先完成冷加载,让本测试观测已启动 Git 的超时与后续节流。
+	warmCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	warm := exec.CommandContext(warmCtx, filepath.Join(dir, name))
+	warm.Env = append(os.Environ(), "SUBMON_TEST_FAST_EXIT=1")
+	if err := warm.Run(); err != nil {
+		t.Fatalf("预热 Git 测试程序: %v", err)
 	}
 	logPath := filepath.Join(dir, "spawns")
 	t.Setenv("PATH", dir)
@@ -322,5 +337,58 @@ func TestStatuslineTimingKeepsStdoutUnchanged(t *testing.T) {
 	}
 	if stages["cli_started_unix_ms"] < 1e12 || stages["run_finished_unix_ms"] < stages["cli_started_unix_ms"] {
 		t.Fatalf("跨进程边界必须使用 Unix 毫秒时间戳: %v", stages)
+	}
+}
+
+// UTC 进程时区应保留旧 offset 缓存的瞬时归零保护,并将新快照写为 Z。
+func TestStatuslineUTCWithLegacyOffsetCache(t *testing.T) {
+	isolateAppDirs(t, t.TempDir())
+	t.Setenv("SUBMON_TEST_STATUSLINE", "1")
+	t.Setenv("SUBMON_TEST_LOCAL_OFFSET", "1")
+	t.Setenv("SUBMON_STATUSLINE_TIMING", "0")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("SUBMON_LAYOUT", "a")
+	cfg := config.Default()
+	path := ctxCachePath(cfg, "offset-cache", "")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	old := ctxSample{Pct: 42, Effective: 200000, At: time.Now().Add(-10 * time.Second).In(time.FixedZone("legacy", 8*3600))}
+	raw, err := json.Marshal(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(pct string) string {
+		c := exec.Command(exe, "statusline", "--no-color")
+		c.Stdin = strings.NewReader(`{"session_id":"offset-cache","model":{"display_name":"Claude"},"context_window":{"context_window_size":200000,"used_percentage":` + pct + `}}`)
+		out, err := c.CombinedOutput()
+		if err != nil {
+			t.Fatalf("运行失败: %v %s", err, out)
+		}
+		return string(out)
+	}
+	if out := run("0"); !strings.Contains(out, "42%") {
+		t.Fatalf("旧 offset 缓存失效: %s", out)
+	}
+	if out := run("55"); !strings.Contains(out, "55%") {
+		t.Fatalf("当前帧未更新: %s", out)
+	}
+	var saved map[string]any
+	raw, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if at, ok := saved["at"].(string); !ok || !strings.HasSuffix(at, "Z") {
+		t.Fatalf("新缓存没有使用 UTC: %s", raw)
 	}
 }

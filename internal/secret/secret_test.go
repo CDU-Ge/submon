@@ -3,6 +3,7 @@ package secret
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -38,13 +39,13 @@ func TestEncryptDecryptRoundtrip(t *testing.T) {
 		t.Fatalf("roundtrip: got %q want %q", got, pt)
 	}
 
-	// Key file created with tight permissions.
+	// POSIX mode 位只在 Unix 有权限含义;Windows 不通过 FileMode 暴露 ACL。
 	key := filepath.Join(dir, "submon", "secret.key")
 	info, err := os.Stat(key)
 	if err != nil {
 		t.Fatal("key file not created")
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Errorf("key file mode = %v, want 0600", info.Mode().Perm())
 	}
 }

@@ -73,3 +73,20 @@ RunE 之外很慢时,须区分 CLI 执行前检查和系统启动/Go 初始化�
 重新构建后,诊断行提供 cli_started_unix_ms 与 run_finished_unix_ms。脚本使用同一系统的 UTC 时钟与父进程 Stopwatch,把剩余耗时拆成 before_cli_ms(启动调用前到 cmd.Execute 入口)和 after_run_ms(RunE 计时结束到父进程观察到退出)。前者包含进程创建、加载、Go runtime 与包初始化;后者包含诊断写入、CLI 返回、进程退出与父进程唤醒。这是定位边界,不能单独指认某个系统组件。两项逐次写入 invocations.jsonl,均值写入 application_stage_mean_ms 并打印。时钟精度或系统校时可能导致小误差,负值原样保留;旧二进制缺少时间戳时保持 null,不计算这两项均值。
 
 2026-10-11 Windows 实测:process_start_ms 平均 3.69ms,wait_exit_ms 82.59ms,drain_output_ms 0.03ms;禁用 Explorer 检测后整体 P50 仍约 85ms,主因尚未定位。Linux 同脚本 200 次(仅移除平台限制,不采样、零间隔、开启诊断)P50 3.10ms/P95 3.69ms,进入 CLI 前平均 2.61ms、完成至观察退出 0.22ms。该对照不能替代 Windows 实测,日志保留于 statusline-logs/local-boundaries-20261011T104419Z/。
+
+
+### Windows SSH 实机结果(2026-10-11)
+
+在 administrator@192.168.49.11 上,当前源码放入 E:\Projects\submon\statusline-logs\ssh-diagnostics-20261011\source,测试未覆盖远端原源码或 submon.exe。所有实机日志位于该日志根目录,本地同路径 statusline-logs/ssh-diagnostics-20261011/ 保留副本。
+
+| 程序与条件 | 调用次数 | P50 | P95 |
+| --- | ---: | ---: | ---: |
+| 修复前 Go 1.26.1 本机构建 | 100 | 84.02ms | 92.02ms |
+| 最小 Go 1.26.1 程序 | 100 | 26.52ms | 28.54ms |
+| 修复后 Go 1.26.1 本机构建 | 200 | 32.45ms | 34.94ms |
+| 修复后 Go 1.27 交叉构建 | 200 | 30.47ms | 32.94ms |
+| 修复后 Go 1.26.1,开启进程采样 | 500 | 32.58ms | 34.87ms |
+
+未注明采样的对照均为零间隔、-NoProcessSampling -TraceStages。inittrace-go126 的 stderr 显示 TOML 库初始化约 49ms,来源为 eager 读取本地时区。只更换 TOML 库会将该开销移到旧 JSON 时间戳解析;statusline 同时使用 UTC 后才消除重复系统时区初始化。新配置编解码器支持 TOML 1.1,配置兼容回归覆盖中文、Windows literal 路径、多行凭据与设置往返;旧带 offset 的 JSON 缓存仍保持原时刻。诊断仍默认关闭。
+
+sampled-500 共 175 次采样。结束时测试程序/Git 均为 0 个,OpenConsole 数量为基线的 3 个,conhost 为基线的 6 个;追踪组 private bytes 从约 385.71MiB 到 383.55MiB。采样包含其他用户进程,本次短时实验未见残留累积,不能据此证明长期无泄漏。

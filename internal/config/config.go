@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/BurntSushi/toml"
 	"github.com/ge/subscription-monitor/internal/appdir"
 	"github.com/ge/subscription-monitor/internal/model"
 	"github.com/ge/subscription-monitor/internal/secret"
+	"github.com/pelletier/go-toml/v2"
 )
 
 // DefaultLabel 是"默认账号"的标签。空 label 在读取/写入时统一规范化为它。

@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/BurntSushi/toml"
 	"github.com/ge/subscription-monitor/internal/config"
 	"github.com/ge/subscription-monitor/internal/provider"
 	"github.com/ge/subscription-monitor/internal/secret"
+	"github.com/pelletier/go-toml/v2"
 	"github.com/spf13/cobra"
 )
 
@@ -71,7 +71,7 @@ func runConfigMigrate(cmd *cobra.Command, args []string) error {
 
 	var buf bytes.Buffer
 	enc := toml.NewEncoder(&buf)
-	enc.Indent = ""
+	enc.SetIndentSymbol("")
 	if err := enc.Encode(cfg); err != nil {
 		return fmt.Errorf("encode config: %w", err)
 	}
