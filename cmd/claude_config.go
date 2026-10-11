@@ -1,9 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
-	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -24,58 +21,7 @@ var installClaudeCmd = &cobra.Command{
 		"已有配置合并保留(不覆盖其他字段);refreshInterval=30 让空闲会话\n" +
 		"的状态栏倒计时也保持新鲜 —— statusline 只读缓存,高频调用无额外开销。",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		bin, err := os.Executable()
-		if err != nil {
-			return err
-		}
-		bin, err = filepath.Abs(bin)
-		if err != nil {
-			return err
-		}
-
-		path, err := claudeSettingsPath()
-		if err != nil {
-			return err
-		}
-
-		// 合并:读现有 JSON(任意未知字段原样保留),只动 statusLine。
-		// 这里是用户明确要求"指向 submon",所以 force=true(自己的脚本被
-		// 顶掉属于预期),但 padding/refreshInterval 之类的调整仍保留。
-		settings := map[string]any{}
-		if raw, err := os.ReadFile(path); err == nil {
-			if err := json.Unmarshal(raw, &settings); err != nil {
-				return fmt.Errorf("解析 %s: %w(手动修复后重试)", path, err)
-			}
-		}
-		action := mergeStatuslineSetting(settings, bin, true)
-		out, err := json.MarshalIndent(settings, "", "  ")
-		if err != nil {
-			return err
-		}
-
-		if claudePrint {
-			fmt.Fprintln(cmd.OutOrStdout(), string(out))
-			return nil
-		}
-		if action == statuslineUnchanged {
-			// 内容没变就别写:写一次会让 Claude Code 重载并重跑一遍命令。
-			fmt.Fprintln(cmd.OutOrStdout(), "Claude Code 状态栏:已是最新,未改动", path)
-			return nil
-		}
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			return err
-		}
-		if err := os.WriteFile(path, append(out, '\n'), 0o600); err != nil {
-			return err
-		}
-		fmt.Fprintln(cmd.OutOrStdout(), "已写入:", path)
-		if action == statuslineRepaired {
-			// Claude Code 会监听 settings.json 自动重载,不用重启会话。
-			fmt.Fprintln(cmd.OutOrStdout(), "statusLine 命令已修正(Windows 反斜杠 → 正斜杠);Claude Code 会自动重载")
-		} else {
-			fmt.Fprintln(cmd.OutOrStdout(), "重启 Claude Code 会话后生效")
-		}
-		return nil
+		return runInstallClaudeMode(cmd, true, claudePrint)
 	},
 }
 
@@ -144,7 +90,7 @@ const (
 //     padding / refreshInterval / hideVimModeIndicator 的调整原样保留;
 //   - 别人写的条目:install 路径(force=false)一律不碰;`install claude`
 //     (force=true)是用户明确要求指向 submon,才覆盖 command 并补齐字段。
-func mergeStatuslineSetting(settings map[string]any, bin string, force bool) statuslineSettingAction {
+func mergeStatuslineSetting(settings map[string]any, bin string, force bool, previousBins ...string) statuslineSettingAction {
 	want := statuslineCommand(bin)
 	existing, ok := settings["statusLine"]
 	if !ok || existing == nil {
@@ -162,7 +108,18 @@ func mergeStatuslineSetting(settings map[string]any, bin string, force bool) sta
 	}
 	cur, _ := m["command"].(string)
 	tail, ours := statuslineCommandTail(cur, bin)
+	if !ours {
+		for _, previous := range previousBins {
+			if tail, ours = statuslineCommandTail(cur, previous); ours {
+				break
+			}
+		}
+	}
 	tail = stripLegacyStatuslineFlags(tail)
+	canonical := want
+	if ours && tail != "" {
+		canonical = statuslinePath(bin) + " " + tail
+	}
 	switch {
 	case !ours:
 		if !force {
@@ -177,13 +134,9 @@ func mergeStatuslineSetting(settings map[string]any, bin string, force bool) sta
 			m["refreshInterval"] = 30
 		}
 		return statuslineRepaired
-	case cur != want:
-		// 更新路径并移除已取消的 provider 参数,保留其他参数。
-		if tail != "" {
-			m["command"] = statuslinePath(bin) + " " + tail
-		} else {
-			m["command"] = want
-		}
+	case cur != canonical:
+		// 修复路径与已取消的参数,规范化后无需反复写入 settings。
+		m["command"] = canonical
 		return statuslineRepaired
 	default:
 		return statuslineUnchanged

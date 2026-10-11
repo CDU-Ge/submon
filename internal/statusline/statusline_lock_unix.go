@@ -1,6 +1,6 @@
 //go:build !windows
 
-package cmd
+package statusline
 
 import (
 	"golang.org/x/sys/unix"

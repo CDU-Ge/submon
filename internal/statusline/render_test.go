@@ -1,4 +1,4 @@
-package cmd
+package statusline
 
 import (
 	"io"
@@ -414,19 +414,6 @@ func TestGitStatusCachedThrottles(t *testing.T) {
 // TestStatuslineCommandShellSafe 守住写进 Claude Code 的命令行形状:必须以
 // statusline 结尾、含空格的路径必须加引号(Git Bash 与 PowerShell 都按
 // 空格切词)。Windows 专属的反斜杠转换见 claude_config_windows_test.go。
-func TestStatuslineCommandShellSafe(t *testing.T) {
-	got := statuslineCommand(filepath.Join("opt", "submon", "submon"))
-	if !strings.HasSuffix(got, " statusline") {
-		t.Fatalf("命令必须以 statusline 结尾,得到 %q", got)
-	}
-	if strings.Contains(got, `\`) {
-		t.Errorf("命令里不许留裸反斜杠,得到 %q", got)
-	}
-	if spaced := statuslineCommand(filepath.Join("my tools", "submon.exe")); !strings.HasPrefix(spaced, `"`) {
-		t.Errorf("含空格路径应加引号,得到 %q", spaced)
-	}
-}
-
 func TestCtxBar(t *testing.T) {
 	// 8 格宽,精度 1/(8*8)=1.5625%。空格填未占用部分。
 	cases := map[float64]string{
@@ -472,10 +459,6 @@ func TestQuotaWindowMarkerAndBadge(t *testing.T) {
 		t.Errorf("expected red at 3%% remaining, got %s", out)
 	}
 
-	badge := providerBadge(model.ProviderMinimax)
-	if !strings.Contains(badge, "MINIMAX") {
-		t.Errorf("badge should be uppercase provider, got %s", badge)
-	}
 }
 
 func TestPeakHourReminder(t *testing.T) {

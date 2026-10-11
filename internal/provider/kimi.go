@@ -94,24 +94,6 @@ type Kimi struct {
 
 func (k *Kimi) Name() model.Provider { return model.ProviderKimi }
 
-// kimiRules 是 Kimi 在内建 URL 检测中的全部声明。两套 host:
-//   - api.kimi.com — Kimi Coding Plan(/coding/v1 path 是强信号)
-//   - moonshot.cn / moonshot.com — Moonshot 系,历史命名,保留
-func kimiRules() []Rule {
-	return []Rule{
-		// Coding Plan 用 path 前缀窄化:任何 host 上挂着 /coding/v1 都视为 Kimi,
-		// 这是用户私有代理场景里"推断 api 端点"的关键信号。
-		{Provider: model.ProviderKimi, PathPrefix: "/coding/v1"},
-		{Provider: model.ProviderKimi, Hosts: []string{
-			"*.kimi.com", "kimi.com",
-			"*.moonshot.cn", "moonshot.cn",
-			"*.moonshot.com", "moonshot.com",
-		}},
-	}
-}
-
-const DefaultKimiBaseURL = "https://api.kimi.com/coding/v1"
-
 func (k *Kimi) client() *http.Client {
 	if k.Client != nil {
 		return k.Client
@@ -494,3 +476,5 @@ func derefFloat(p *flexFloat) float64 {
 	}
 	return float64(*p)
 }
+
+const DefaultKimiBaseURL = "https://api.kimi.com/coding/v1"

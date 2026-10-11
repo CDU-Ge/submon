@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ge/subscription-monitor/internal/config"
+	"github.com/ge/subscription-monitor/internal/display"
 	"github.com/ge/subscription-monitor/internal/model"
 )
 
@@ -161,14 +162,7 @@ func renderStatusLine(w io.Writer, label, value string) {
 // pctColor maps remaining percentage to threshold color (shared by status
 // panels and the statusline).
 func pctColor(pct float64, cfg *config.Config) string {
-	switch {
-	case pct < cfg.Notify.CritBelowPct:
-		return ansiRed
-	case pct < cfg.Notify.WarnBelowPct:
-		return ansiYellow
-	default:
-		return ansiGreen
-	}
+	return display.PercentageColor(pct, cfg, ansiRed, ansiYellow, ansiGreen)
 }
 
 func formatCounts(win *model.Window) string {
@@ -188,22 +182,6 @@ func humanInt(v int64) string {
 		return fmt.Sprintf("%.1fK", float64(v)/1_000)
 	default:
 		return fmt.Sprintf("%d", v)
-	}
-}
-
-func humanDuration(d time.Duration) string {
-	if d < 0 {
-		return "即将"
-	}
-	switch {
-	case d >= 24*time.Hour:
-		return fmt.Sprintf("%dd%dh", int(d.Hours())/24, int(d.Hours())%24)
-	case d >= time.Hour:
-		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
-	case d >= time.Minute:
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	default:
-		return fmt.Sprintf("%ds", int(d.Seconds()))
 	}
 }
 

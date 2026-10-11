@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/spf13/cobra"
 )
@@ -98,11 +99,19 @@ func installLongText() string {
 // --print 模式:只渲染将写入的 JSON 片段,不读不写,适合想看看到底改了什么
 // 再决定跑不跑。
 func runInstallClaude(cmd *cobra.Command) error {
+	return runInstallClaudeMode(cmd, false, installClaudePrint)
+}
+
+func runInstallClaudeMode(cmd *cobra.Command, force, previewOnly bool) error {
 	bin, err := os.Executable()
 	if err != nil {
 		return err
 	}
 	bin, err = filepath.Abs(bin)
+	if err != nil {
+		return err
+	}
+	renderer, err := resolveStatuslineBinary(bin, false)
 	if err != nil {
 		return err
 	}
@@ -116,13 +125,21 @@ func runInstallClaude(cmd *cobra.Command) error {
 			return fmt.Errorf("解析 %s: %w\n  手动修复 JSON 后重试,或 `mv %s %s.bak` 让 submon 重建", path, err, path, path)
 		}
 	}
-	if installClaudePrint {
+	if previewOnly {
 		// 预览走同一套合并逻辑(在副本上),否则 --print 说的和真做的不一致。
 		preview := make(map[string]any, len(settings)+1)
 		for k, v := range settings {
 			preview[k] = v
 		}
-		action := mergeStatuslineSetting(preview, bin, false)
+		action := mergeStatuslineSetting(preview, renderer, force, bin)
+		if force {
+			raw, err := json.MarshalIndent(preview, "", "  ")
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), string(raw))
+			return nil
+		}
 		out, err := json.MarshalIndent(preview["statusLine"], "", "  ")
 		if err != nil {
 			return err
@@ -135,7 +152,17 @@ func runInstallClaude(cmd *cobra.Command) error {
 	// 会被 Git Bash 当转义符吃掉 → 命令静默失败、状态栏空白。见到自己的条目
 	// 必须能就地纠正(只改 command,保留用户调过的 padding/refreshInterval);
 	// 别人的条目才跳过 —— 这就是"不覆盖用户配置"的原意。
-	action := mergeStatuslineSetting(settings, bin, false)
+	action := mergeStatuslineSetting(settings, renderer, force, bin)
+	if action != statuslineForeign {
+		if _, err := resolveStatuslineBinary(bin, true); err != nil {
+			return err
+		}
+		if renderer != bin {
+			fmt.Fprintln(cmd.OutOrStdout(), "轻量状态栏程序:", renderer)
+		} else if runtime.GOOS == "windows" {
+			fmt.Fprintln(cmd.OutOrStdout(), "当前构建未内嵌轻量状态栏,使用完整 CLI;可通过 scripts/build.ps1 构建")
+		}
+	}
 	switch action {
 	case statuslineUnchanged:
 		fmt.Fprintln(cmd.OutOrStdout(), "Claude Code 状态栏:已注册且命令正确,跳过")
@@ -155,7 +182,7 @@ func runInstallClaude(cmd *cobra.Command) error {
 		return err
 	}
 	if action == statuslineRepaired {
-		fmt.Fprintln(cmd.OutOrStdout(), "Claude Code 状态栏:命令已修正("+path+",Windows 反斜杠 → 正斜杠);Claude Code 会自动重载")
+		fmt.Fprintln(cmd.OutOrStdout(), "Claude Code 状态栏:命令已更新("+path+");Claude Code 会自动重载")
 	} else {
 		fmt.Fprintln(cmd.OutOrStdout(), "Claude Code 状态栏:已写入", path, "(重启会话后生效)")
 	}

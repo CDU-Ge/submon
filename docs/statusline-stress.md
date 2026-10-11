@@ -106,3 +106,34 @@ sampled-500 共 175 次采样。结束时测试程序/Git 均为 0 个,OpenConso
 | console 构建,仅测量父进程临时 timeBeginPeriod(1) | 32.58ms | 34.80ms |
 
 GUI subsystem 是定位实验,未更改生产构建或替换项目程序。后续采用之前须验证普通 CLI 的控制台连接、shell 等待与交互输入语义。timeBeginPeriod 探针在 finally 中恢复,未更改系统设置。实验程序均名为 submon.exe,目录区分构建。日志保留于远端和本地 statusline-logs/ssh-diagnostics-20261011/cache-question-*。
+
+### 独立状态栏组件与防护诊断
+
+上述 GUI 实验已落实为独立 `apps/statusline` 组件,主 CLI 保持 console subsystem。共享 `internal/statusline` 渲染、Git Job Object、锁与输入预算;纯 URL 识别在 `internal/routing`,轻量入口不链接 Cobra 或 net/http。Windows 发布内嵌组件,install 部署到 `%LocalAppData%\submon\statusline\submon.exe`。两处文件均名 submon.exe,不使用别名,也没有常驻服务。
+
+```powershell
+.\scripts\build.ps1
+.\submon.exe install claude --print # 预览实际路径与设置
+.\submon.exe install claude         # 显式接管已有自定义状态栏
+.\scripts\statusline-stress.ps1 -Submon "$env:LOCALAPPDATA\submon\statusline\submon.exe" -Iterations 5000 -DelayMilliseconds 0 -TraceStages
+# 隔离用户配置的安装与输出回归,日志自动保留:
+.\scripts\tests\statusline-standalone.tests.ps1 -Submon .\submon.exe
+```
+
+`submon install` 自动迁移指向当前主 CLI 的旧命令,但保留其他自定义命令。SSH 账号是 Administrator;实机已加载用户 C:\Users\18165 的状态栏配置指向 PowerShell 脚本,本次没有覆盖该自定义设置。实际安装集成验证使用隔离用户目录。Windows helper 大小为 3,266,560 bytes,主 CLI(含组件)为 11,446,272 bytes。
+
+同台 Windows Go 1.26.1 原生构建,开启 TraceStages、零间隔:
+
+| 组件与条件 | 次数 | P50 | P95 |
+| --- | ---: | ---: | ---: |
+| 独立组件,不采样 | 200 | 17.33ms | 18.98ms |
+| 独立组件,进程采样 | 500 | 17.66ms | 19.56ms |
+| 独立组件,进程采样 | 5000 | 17.79ms | 19.77ms |
+
+500 次采样 run_ms 平均 1.18ms,before_cli_ms 平均 16.75ms;剩余成本主要在进入应用逻辑之前。112 次资源采样结束时 submon/Git 都为 0 个,OpenConsole 保持 3 个、conhost 保持 7 个;追踪组 private bytes 比基线增加 172,032 bytes。该采样包含 PowerShell 与其他用户进程,不能将整体峰值视作组件常驻内存,也不能据此证明长期无泄漏。
+
+安装回归通过部署、只读预览、旧路径与参数迁移、其他设置保留、重复安装不改写文件、三种布局的有色/无色输出逐字一致、自定义命令保留及不支持参数拒绝。Git Bash 管道调用退出码 0,输出正确。证据保存于 standalone-install-test-fixed、standalone-200、standalone-sampled-500 和 standalone-gitbash.json。
+
+Defender 实时保护开启,本次未关闭防护或修改排除项。20 秒 Defender 性能记录覆盖 400 次完整 CLI 调用:1698 次实时扫描合计 1460.16ms,其中 1628 次、1375.06ms 来自微软电脑管家 MSPCManagerCore.exe 的 disk_analysis.db;测试 exe 的 3 次文件扫描合计约 0.15ms,记录显示既有 Exclusion。缓存写入扫描有约 6–8ms 的个别开销。现有记录不支持将约 32ms 固定启动延迟归因于 Defender;电脑管家同期磁盘活动较多,是否导致用户卡顿仍需发生卡顿时采样。性能报告与原始 ETL 留在远端日志根目录;文本报告也已复制本地。
+
+5000 次连续调用全部成功,循环 98.59s,尾部观察 3.13s,861 次采样结束时 submon/Git 为 0 个,OpenConsole 与 conhost 分别保持基线的 3/7 个。追踪组 private bytes 较基线增加约 14.8MiB,主要为 PowerShell;不能据此宣称全设备内存完全不增长。测试期间短暂并行运行 Windows Go 回归,因此整体进程/内存峰值包含额外测试负载。日志保留于 standalone-sampled-5000。最终重新构建与隔离安装回归保存于 standalone-final-build.log 和 standalone-final-install-test。

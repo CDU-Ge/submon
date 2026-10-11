@@ -37,19 +37,6 @@ type OpenCode struct {
 
 func (o *OpenCode) Name() model.Provider { return model.ProviderOpenCode }
 
-// opencodeRules 是 OpenCode 在内建 URL 检测中的全部声明。OpenCode 是
-// 多入口产品,ai / com 两套 host 都可能挂着 coding / chat 子域。
-func opencodeRules() []Rule {
-	return []Rule{
-		{Provider: model.ProviderOpenCode, Hosts: []string{
-			"*.opencode.ai", "opencode.ai",
-			"*.opencode.com", "opencode.com",
-		}},
-	}
-}
-
-const DefaultOpenCodeBaseURL = "https://opencode.ai"
-
 func (o *OpenCode) client() *http.Client {
 	if o.Client != nil {
 		return o.Client
@@ -164,3 +151,5 @@ func opencodeToWindow(w opencodeWindow, label string, length time.Duration) *mod
 	}
 	return out
 }
+
+const DefaultOpenCodeBaseURL = "https://opencode.ai"

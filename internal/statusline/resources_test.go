@@ -1,4 +1,4 @@
-package cmd
+package statusline
 
 import (
 	"bytes"
@@ -87,7 +87,7 @@ func TestMain(m *testing.M) {
 		if os.Getenv("SUBMON_TEST_LOCAL_OFFSET") == "1" {
 			time.Local = time.FixedZone("test-offset", 8*3600)
 		}
-		Execute()
+		os.Exit(Execute(os.Args[1:]))
 		os.Exit(0)
 	}
 	if os.Getenv("SUBMON_TEST_JOB_PARENT") == "1" {
@@ -287,14 +287,6 @@ func TestExpiredQuotaIsReadOnlyInEveryLayout(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Fatalf("渲染创建了刷新锁等文件: %v", entries)
-	}
-}
-
-func TestStatuslineHasNoProviderFlags(t *testing.T) {
-	for _, name := range []string{"provider", "show-provider"} {
-		if statuslineCmd.Flags().Lookup(name) != nil {
-			t.Errorf("statusline 仍暴露 --%s", name)
-		}
 	}
 }
 

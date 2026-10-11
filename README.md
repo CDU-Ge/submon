@@ -5,13 +5,19 @@ Monitors coding-plan quotas for **Zhipu** (open.bigmodel.cn / api.z.ai),
 high-frequency consumers (terminal statuslines) never hammer the APIs, plus
 Gotify push alerts on threshold crossings.
 
-Single Go binary, built with cobra. Runs on Linux, macOS and Windows.
+Go CLI built with cobra. Runs on Linux, macOS and Windows. Windows releases
+embed a small, separate statusline renderer deployed by `submon install`.
 
 ## Install
 
 ```sh
 go build -o ~/.local/bin/submon .          # POSIX
-go build -o submon.exe .                   # Windows (PowerShell / cmd)
+```
+
+On Windows (PowerShell), build the CLI with its embedded renderer:
+
+```powershell
+.\scripts\build.ps1
 ```
 
 Then wire it up: `submon login` (credentials) and `submon install` (periodic
@@ -19,12 +25,13 @@ refresh + Claude Code statusline).
 
 ## Windows
 
-Same binary, same commands — only the plumbing differs:
+The CLI commands are the same; statusline uses a separate one-shot executable:
 
 | Concern | Where it lives on Windows |
 | --- | --- |
 | config.toml, secret.key | `%AppData%\submon\` (roams with the user profile) |
 | cache.json, completions | `%LocalAppData%\submon\` (machine-local) |
+| statusline renderer | `%LocalAppData%\submon\statusline\submon.exe` |
 | Claude Code settings | `%USERPROFILE%\.claude\settings.json` |
 | periodic refresh | Task Scheduler task `submon-watch` (see `submon install`) |
 | shell completion | PowerShell: `submon completion-install --shell powershell` |
@@ -37,6 +44,16 @@ submon check                     # diagnose config / cache / task / Gotify
 ```
 
 Notes:
+
+- `submon install` deploys the embedded statusline renderer and migrates settings
+  pointing at the CLI. Both executables retain the name `submon.exe`. The renderer
+  uses the Windows GUI subsystem to avoid console startup, reads the same caches,
+  and exits after each call. The main CLI retains normal console behavior.
+- Existing custom statusline commands are preserved. Use `submon install claude`
+  to explicitly switch them to submon. `--print` previews without deployment.
+- A plain `go build` from a clean tree does not bundle the renderer; installation
+  falls back to the main CLI. Use `scripts/build.ps1`, `make build` on Windows, or
+  `make release` to include it.
 
 - `submon install` registers the task via `schtasks`, running a generated VBS
   launcher (`%AppData%\submon\submon-watch.vbs`) so no console window flashes
@@ -215,6 +232,12 @@ Run from a Git repository in PowerShell after building `submon.exe`:
 .\scripts\statusline-stress.ps1 -Submon .\submon.exe -Workspace . -Iterations 10000
 # Continuous loop within a 30-minute limit, with no deliberate delay:
 .\scripts\statusline-stress.ps1 -Submon .\submon.exe -Iterations 0 -DurationSeconds 1800 -DelayMilliseconds 0
+```
+
+To measure the renderer actually installed on Windows:
+
+```powershell
+.\scripts\statusline-stress.ps1 -Submon "$env:LOCALAPPDATA\submon\statusline\submon.exe" -Iterations 500 -DelayMilliseconds 0 -TraceStages
 ```
 
 For latency diagnosis without sampling or deliberate delays:
