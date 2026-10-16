@@ -774,7 +774,7 @@ const (
 // ctxUsage 是上下文用量唯一的取值入口,三套排版共用。
 //
 // 优先级:
-//  1. used_percentage —— Claude Code 自己算好的已用%,官方推荐,与 /context 一致;
+//  1. used_percentage —— 先按原始窗口还原用量,再换算为有效窗口百分比;
 //  2. total_input_tokens / 有效上限 —— 上一项缺失时的兜底;
 //  3. 上一帧的值(ctxStickyTTL 内)—— 前两样都没有时用它,消掉跳闪;
 //  4. 都没有 → ok=false,整段不渲染。
@@ -799,6 +799,10 @@ func ctxUsage(in *statuslineInput, cfg *config.Config, now time.Time) (pct float
 	switch {
 	case cw.UsedPercentage != nil && *cw.UsedPercentage > 0:
 		pct = *cw.UsedPercentage
+		// 上游百分比的分母是原始窗口;显示压缩窗口时必须同步换算。
+		if cw.ContextWindowSize != nil && *cw.ContextWindowSize > 0 && eff > 0 {
+			pct *= *cw.ContextWindowSize / float64(eff)
+		}
 	case cw.TotalInputTokens != nil && *cw.TotalInputTokens > 0 && eff > 0:
 		pct = *cw.TotalInputTokens / float64(eff) * 100
 	default:

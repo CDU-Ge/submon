@@ -736,3 +736,37 @@ func TestQuotaSegmentForProviderSingleKeyNoLabel(t *testing.T) {
 		t.Errorf("single-key should not have | separator: %s", out)
 	}
 }
+
+func TestCtxUsageScalesToEffectiveWindow(t *testing.T) {
+	for _, tc := range []struct {
+		name, max, compact string
+		want               float64
+		limit              int64
+	}{
+		{"compact", "", "100000", 80, 100000},
+		{"maximum", "100000", "", 80, 100000},
+		{"smaller limit", "150000", "100000", 80, 100000},
+		{"clamped", "", "50000", 100, 50000},
+		{"larger compact window", "", "500000", 40, 200000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateAppDirs(t, t.TempDir())
+			t.Setenv("CLAUDE_CODE_MAX_CONTEXT_TOKENS", tc.max)
+			t.Setenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", tc.compact)
+			total, pct := 200000.0, 40.0
+			in := &statuslineInput{SessionID: "scaled"}
+			in.ContextWindow = contextWindowInfo{ContextWindowSize: &total, UsedPercentage: &pct}
+			cfg, now := config.Default(), time.Now()
+			got, limit, ok := ctxUsage(in, cfg, now)
+			if !ok || got != tc.want || limit != tc.limit {
+				t.Fatalf("got (%v, %v, %v), want (%v, %v, true)", got, limit, ok, tc.want, tc.limit)
+			}
+			zero := 0.0
+			in.ContextWindow.UsedPercentage = &zero
+			got, _, ok = ctxUsage(in, cfg, now.Add(time.Second))
+			if !ok || got != tc.want {
+				t.Fatalf("transient zero: got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
